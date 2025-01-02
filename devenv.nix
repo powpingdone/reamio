@@ -2,7 +2,7 @@
 
 {
   # https://devenv.sh/packages/
-  packages = [ pkgs.git pkgs.sqlx-cli ];
+  packages = [ pkgs.git pkgs.sqlx-cli pkgs.sqlformat ];
 
   # https://devenv.sh/languages/
   languages.rust.enable = true;

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block header %}
+    {{ super() }}
+    <h1>Home</h1>
+{% endblock %}
+{% block main %}
+    {{ super() }}
+    <dl>
+	{% for artist in artists %}
+ 	    <section>
+ 		<dt>
+		    <h2>{{ artist.title|e }}</h2>
+		</dt>
+		<dd>
+		{% for album in artist %}
+		    <h3>{{ album.title|e }}</h3>
+		    {% for track in album.tracks %}
+			{# TODO: make this track.pos #}
+			<p>{{ loop.index|e }} - {{ track.title|e }}</p>
+		    {% endfor %}
+		{% endfor %}
+		</dd>
+ 	    </section>
+	{% endfor %}
+    </dl>
+{% endblock %} 
