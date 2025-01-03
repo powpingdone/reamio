@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    mem,
     sync::{Arc, RwLock, Weak},
 };
 
@@ -12,11 +13,11 @@ use axum::{
 use futures::StreamExt;
 use minijinja::Environment;
 use serde::Serialize;
+use sqlx::prelude::*;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
-use sqlx::prelude::*;
 
 #[derive(Clone)]
 pub struct ReamioApp<'a> {
@@ -33,36 +34,79 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
 
     #[derive(Serialize)]
     struct Track {
-        pub id: i64,
         pub title: String,
     }
     #[derive(Serialize)]
     struct Album {
-        pub id: i64,
         pub title: String,
         pub tracks: Vec<Track>,
     }
     #[derive(Serialize)]
     struct Artist {
-        pub id: i64,
         pub title: String,
         pub albums: Vec<Album>,
     }
-    
-    let mut albums = vec![];
-    let mut arows = sqlx::query("SELECT * FROM album;").fetch(  &mut *db);
 
-    while let Some(row) = arows.next().await {
+    // mega query
+    let mut rows = sqlx::query(
+        r#"
+    SELECT
+      artist.name AS artist,
+      track.title AS track,
+      album.name AS album,
+      artist.id AS ar_id,
+      album.id AS al_id
+    FROM artist
+    JOIN artist_tracks ON artist_tracks.artist = artist.id
+    JOIN track ON artist_tracks.track = track.id
+    JOIN album_track ON track.id = album_track.track
+    JOIN album ON album_track.album = album.id
+    GROUP BY ar_id, al_id
+    ORDER BY artist, album;"#,
+    )
+    .fetch(&mut *db);
+
+    // init structs
+    let mut artists: Vec<Artist> = vec![];
+    let mut ar_id = -1_i64;
+    let mut al_id: i64;
+    let mut albums = vec![];
+    let mut tracks = vec![];
+    let mut ar_t: String;
+    let mut al_t: String;
+
+    // extractor
+    while let Some(row) = rows.next().await {
         let row = row.unwrap();
-        let mut album = Album {
-            id: row.get("id"),
-            title: row.get("name"),
-            tracks: vec![],
-        };
-        // TODO: create subqueries for each album and track
-        
-        albums.push(album);
+        if row.get::<i64, _>("ar_id") != ar_id {
+            if ar_id == -1 {
+                // init states
+                ar_t = row.get("artist");
+                ar_id = row.get("ar_id");
+                al_t = row.get("album");
+                al_id = row.get("al_id");
+            } else {
+                // artist completed
+            }
+        }
     }
+    if ar_id == -1 {
+        // no rows found, die
+        return "".into_response();
+    }
+
+    // construct final artist
+    artists.push(Artist {
+        title: ar_t,
+        albums: {
+            let mut album = mem::take(&mut albums);
+            album.push(Album {
+                title: al_t,
+                tracks,
+            });
+            album
+        },
+    });
 
     Html(
         state
@@ -74,6 +118,7 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
             .render(minijinja::context!())
             .unwrap(),
     )
+    .into_response()
 }
 
 fn load_templates() -> Arc<Environment<'static>> {
