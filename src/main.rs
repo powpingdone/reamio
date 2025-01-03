@@ -9,12 +9,14 @@ use axum::{
     routing::get,
     Router,
 };
+use futures::StreamExt;
 use minijinja::Environment;
 use serde::Serialize;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
+use sqlx::prelude::*;
 
 #[derive(Clone)]
 pub struct ReamioApp<'a> {
@@ -26,34 +28,40 @@ pub struct ReamioApp<'a> {
 async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse {
     let music_db_hold = state.music_dbs.upgrade().unwrap();
     let music_db = music_db_hold.read().unwrap();
-    let mut db = music_db.get("powpingdone").unwrap().acquire().await.unwrap();
+    let db_pool = music_db.get("powpingdone").unwrap();
+    let mut db = db_pool.acquire().await.unwrap();
 
     #[derive(Serialize)]
     struct Track {
+        pub id: i64,
         pub title: String,
     }
     #[derive(Serialize)]
     struct Album {
+        pub id: i64,
         pub title: String,
         pub tracks: Vec<Track>,
     }
     #[derive(Serialize)]
     struct Artist {
+        pub id: i64,
         pub title: String,
         pub albums: Vec<Album>,
     }
-    let rows = sqlx::query(r#"
-    SELECT artist.name AS artist_, track.title as track_, album.name as album_ 
-        FROM artist
-        JOIN artist_tracks ON artist.id = artist_tracks.artist
-        JOIN tracks ON tracks.id = artist_tracks.track
-        JOIN album_tracks ON tracks.id = album_tracks.track
-        JOIN album ON album.id = album_tracks.album
-     GROUP BY artist_, album_
-     ORDER BY artist_, album_;"#).fetch(db.into());
+    
+    let mut albums = vec![];
+    let mut arows = sqlx::query("SELECT * FROM album;").fetch(  &mut *db);
 
-    while let row = rows.next().await {
-
+    while let Some(row) = arows.next().await {
+        let row = row.unwrap();
+        let mut album = Album {
+            id: row.get("id"),
+            title: row.get("name"),
+            tracks: vec![],
+        };
+        // TODO: create subqueries for each album and track
+        
+        albums.push(album);
     }
 
     Html(

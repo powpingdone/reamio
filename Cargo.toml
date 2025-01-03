@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.8", features = ["http2", "macros"] }
+futures = "0.3.31"
 minijinja = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
