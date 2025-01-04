@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    fs::create_dir,
     mem,
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, Weak},
 };
 
 use axum::{
@@ -18,6 +19,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct ReamioApp<'a> {
@@ -26,9 +28,9 @@ pub struct ReamioApp<'a> {
     pub music_dbs: Weak<RwLock<HashMap<String, SqlitePool>>>,
 }
 
-async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse {
+async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     let music_db_hold = state.music_dbs.upgrade().unwrap();
-    let music_db = music_db_hold.read().unwrap();
+    let music_db = music_db_hold.read().await;
     let db_pool = music_db.get("powpingdone").unwrap();
     let mut db = db_pool.acquire().await.unwrap();
 
@@ -59,8 +61,8 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
     FROM artist
     JOIN artist_tracks ON artist_tracks.artist = artist.id
     JOIN track ON artist_tracks.track = track.id
-    JOIN album_track ON track.id = album_track.track
-    JOIN album ON album_track.album = album.id
+    JOIN album_tracks ON track.id = album_tracks.track
+    JOIN album ON album_tracks.album = album.id
     GROUP BY ar_id, al_id
     ORDER BY artist, album;"#,
     )
@@ -69,26 +71,46 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
     // init structs
     let mut artists: Vec<Artist> = vec![];
     let mut ar_id = -1_i64;
-    let mut al_id: i64;
+    let mut al_id = -1_i64;
     let mut albums = vec![];
     let mut tracks = vec![];
-    let mut ar_t: String;
-    let mut al_t: String;
+    let mut ar_t = String::new();
+    let mut al_t = String::new();
 
     // extractor
     while let Some(row) = rows.next().await {
         let row = row.unwrap();
         if row.get::<i64, _>("ar_id") != ar_id {
-            if ar_id == -1 {
-                // init states
-                ar_t = row.get("artist");
-                ar_id = row.get("ar_id");
-                al_t = row.get("album");
-                al_id = row.get("al_id");
-            } else {
-                // artist completed
+            if ar_id != -1 {
+                // artist was actually completed, add to list
+                albums.push(Album {
+                    title: mem::take(&mut al_t),
+                    tracks: mem::take(&mut tracks),
+                });
+                artists.push(Artist {
+                    title: mem::take(&mut ar_t),
+                    albums: mem::take(&mut albums),
+                });
             }
+            // init (new) states
+            ar_t = row.get("artist");
+            ar_id = row.get("ar_id");
+            al_t = row.get("album");
+            al_id = row.get("al_id");
+        } else if row.get::<i64, _>("al_id") != al_id {
+            // add completed album
+            albums.push(Album {
+                title: mem::take(&mut al_t),
+                tracks: mem::take(&mut tracks),
+            });
+            // new album
+            al_t = row.get("album");
+            al_id = row.get("al_id");
         }
+
+        tracks.push(Track {
+            title: row.get("track"),
+        });
     }
     if ar_id == -1 {
         // no rows found, die
@@ -99,15 +121,15 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
     artists.push(Artist {
         title: ar_t,
         albums: {
-            let mut album = mem::take(&mut albums);
-            album.push(Album {
+            albums.push(Album {
                 title: al_t,
                 tracks,
             });
-            album
+            albums
         },
     });
 
+    // render
     Html(
         state
             .jinja
@@ -115,7 +137,7 @@ async fn main_page<'a>(State(state): State<ReamioApp<'a>>) -> impl IntoResponse 
             .unwrap()
             .get_template("home.html")
             .unwrap()
-            .render(minijinja::context!())
+            .render(minijinja::context! { artists })
             .unwrap(),
     )
     .into_response()
@@ -144,8 +166,27 @@ async fn main() {
         .run(&user_db)
         .await
         .unwrap();
+
+    // testing pdb
+    let ppd_db = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename("./devdir/powpingdone/music.db")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::migrate!("src/migrations/per_user")
+        .run(&ppd_db)
+        .await
+        .unwrap();
+
+    // setup state
     let jinja = load_templates();
-    let music_dbs = Arc::new(RwLock::new(HashMap::new()));
+    let music_dbs = Arc::new(RwLock::new(HashMap::from([(
+        "powpingdone".to_owned(),
+        ppd_db,
+    )])));
     let state = ReamioApp {
         user_db,
         jinja: Arc::downgrade(&jinja),

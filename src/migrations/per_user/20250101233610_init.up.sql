@@ -18,13 +18,13 @@ CREATE TABLE artist_tracks (
        artist INTEGER NOT NULL,
        track INTEGER NOT NULL,
        PRIMARY KEY (artist, track),
-       FOREIGN KEY (artist) REFERENCES artist.id,
-       FOREIGN KEY (track) REFERENCES track.id
-) STRICT WITHOUT ROWID;
+       FOREIGN KEY (artist) REFERENCES id,
+       FOREIGN KEY (track) REFERENCES id
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE album_tracks (
        track INTEGER PRIMARY KEY,
        album INTEGER NOT NULL,
-       FOREIGN KEY (track) REFERENCES track.id,
-       FOREIGN KEY (album) REFERENCES album.id
-) STRICT WITHOUT ROWID;
+       FOREIGN KEY (track) REFERENCES id,
+       FOREIGN KEY (album) REFERENCES id
+) STRICT, WITHOUT ROWID;
