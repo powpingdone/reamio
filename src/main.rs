@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fs::create_dir,
     mem,
     sync::{Arc, Weak},
 };
@@ -63,7 +62,6 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     JOIN track ON artist_tracks.track = track.id
     JOIN album_tracks ON track.id = album_tracks.track
     JOIN album ON album_tracks.album = album.id
-    GROUP BY ar_id, al_id
     ORDER BY artist, album;"#,
     )
     .fetch(&mut *db);

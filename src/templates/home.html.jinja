@@ -13,7 +13,7 @@
 		    <h2>{{ artist.title|e }}</h2>
 		</dt>
 		<dd>
-		{% for album in artist %}
+		{% for album in artist.albums %}
 		    <h3>{{ album.title|e }}</h3>
 		    {% for track in album.tracks %}
 			{# TODO: make this track.pos #}
