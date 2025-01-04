@@ -6,6 +6,7 @@
 {% endblock %}
 {% block main %}
     {{ super() }}
+    {# List all artists and albums with tracks #}
     <dl>
 	{% for artist in artists %}
  	    <section>
@@ -24,4 +25,8 @@
  	    </section>
 	{% endfor %}
     </dl>
+    {# upload widget #}
+    <form method="post">
+	 
+    </form>
 {% endblock %} 

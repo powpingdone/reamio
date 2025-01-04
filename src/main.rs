@@ -5,15 +5,15 @@ use std::{
 };
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, Multipart, State},
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures::StreamExt;
 use minijinja::Environment;
 use serde::Serialize;
-use sqlx::prelude::*;
+use sqlx::{pool::PoolConnection, prelude::*};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
@@ -27,12 +27,27 @@ pub struct ReamioApp<'a> {
     pub music_dbs: Weak<RwLock<HashMap<String, SqlitePool>>>,
 }
 
-async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
-    let music_db_hold = state.music_dbs.upgrade().unwrap();
+async fn fetch_user_db(
+    music_dbs: Weak<RwLock<HashMap<String, SqlitePool>>>,
+    user: impl AsRef<str>,
+) -> PoolConnection<sqlx::Sqlite> {
+    let music_db_hold = music_dbs.upgrade().unwrap();
     let music_db = music_db_hold.read().await;
-    let db_pool = music_db.get("powpingdone").unwrap();
-    let mut db = db_pool.acquire().await.unwrap();
+    let db_pool = music_db.get(user.as_ref()).unwrap();
+    db_pool.acquire().await.unwrap()
+}
 
+async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
+    let mut db = fetch_user_db(state.music_dbs, "powpingdone").await;
+    while let Some(mp_field) = mp.next_field().await.unwrap() {
+        todo!()
+    }
+}
+
+async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
+    let mut db = fetch_user_db(state.music_dbs, "powpingdone").await;
+
+    // structs for jinja
     #[derive(Serialize)]
     struct Track {
         pub title: String,
@@ -165,7 +180,7 @@ async fn main() {
         .await
         .unwrap();
 
-    // testing pdb
+    // testing db
     let ppd_db = SqlitePoolOptions::new()
         .connect_with(
             SqliteConnectOptions::new()
@@ -190,7 +205,15 @@ async fn main() {
         jinja: Arc::downgrade(&jinja),
         music_dbs: Arc::downgrade(&music_dbs),
     };
-    let router = Router::new().route("/", get(main_page)).with_state(state);
+    let router = Router::new()
+        .route("/", get(main_page))
+        .merge(
+            Router::new()
+                .route("/upload", post(upload_track))
+                // TODO: dynamically enable large uploads via an in-server toggle
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .with_state(state);
     axum::serve(
         tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(),
         router,
