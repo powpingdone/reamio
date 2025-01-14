@@ -26,7 +26,8 @@
 	{% endfor %}
     </dl>
     {# upload widget #}
-    <form method="post">
-	 
+    <form method="post" action="/upload" enctype="multipart/form-data">
+	<input type="file" id="files" name="myFile" multiple webkitdirectory />
+	<button>Send</button>
     </form>
 {% endblock %} 

@@ -39,7 +39,13 @@ async fn fetch_user_db(
 
 async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
     let mut db = fetch_user_db(state.music_dbs, "powpingdone").await;
-    while let Some(mp_field) = mp.next_field().await.unwrap() {
+    while let Some(mut mp_field) = mp.next_field().await.unwrap() {
+        let path = mp_field.file_name();
+        // TODO: path injection protection
+        while let Some(chunk) = mp_field.next().await {
+            let chunk = chunk.unwrap();
+            
+        } 
         todo!()
     }
 }
@@ -125,22 +131,19 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
             title: row.get("track"),
         });
     }
-    if ar_id == -1 {
-        // no rows found, die
-        return "".into_response();
+    if ar_id != -1 {
+        // construct final artist
+        artists.push(Artist {
+            title: ar_t,
+            albums: {
+                albums.push(Album {
+                    title: al_t,
+                    tracks,
+                });
+                albums
+            },
+        });
     }
-
-    // construct final artist
-    artists.push(Artist {
-        title: ar_t,
-        albums: {
-            albums.push(Album {
-                title: al_t,
-                tracks,
-            });
-            albums
-        },
-    });
 
     // render
     Html(
