@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     extract::{DefaultBodyLimit, Multipart, State},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Router,
 };
@@ -18,7 +18,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
-use tokio::sync::RwLock;
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 #[derive(Clone)]
 pub struct ReamioApp<'a> {
@@ -38,16 +38,42 @@ async fn fetch_user_db(
 }
 
 async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
-    let mut db = fetch_user_db(state.music_dbs, "powpingdone").await;
+    let mut db = fetch_user_db(state.music_dbs.clone(), "powpingdone").await;
+    // TODO: use actual path
+    let dbg_path = std::path::Path::new("./devdir/powpingdone");
+    // ingest paths
     while let Some(mut mp_field) = mp.next_field().await.unwrap() {
-        let path = mp_field.file_name();
+        // create path
+        //
         // TODO: path injection protection
+        let Some(path) = mp_field.file_name() else {
+            continue;
+        };
+        let path: std::path::PathBuf = [dbg_path, std::path::Path::new(path)].into_iter().collect();
+        
+        // write out file
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&path)
+            .await
+            .unwrap();
         while let Some(chunk) = mp_field.next().await {
             let chunk = chunk.unwrap();
-            
-        } 
-        todo!()
+            file.write_all(&chunk).await.unwrap();
+        }
+        file.sync_data().await.unwrap();
+        drop(file);
+        
+        // update
+        sqlx::query("INSERT INTO uploaded_files (path) VALUES (?)")
+            .bind(path.to_str().unwrap())
+            .execute(&mut *db)
+            .await
+            .unwrap();
     }
+
+    return Redirect::to("/");
 }
 
 async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
@@ -146,7 +172,7 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     }
 
     // render
-    Html(
+    return Html(
         state
             .jinja
             .upgrade()
@@ -156,7 +182,7 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
             .render(minijinja::context! { artists })
             .unwrap(),
     )
-    .into_response()
+    .into_response();
 }
 
 fn load_templates() -> Arc<Environment<'static>> {
