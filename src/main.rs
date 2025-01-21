@@ -18,13 +18,20 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
-use tokio::{io::AsyncWriteExt, sync::RwLock};
+use tokio::{io::AsyncWriteExt, sync::{RwLock, watch}};
 
 #[derive(Clone)]
 pub struct ReamioApp<'a> {
     pub user_db: SqlitePool,
     pub jinja: Weak<Environment<'a>>,
     pub music_dbs: Weak<RwLock<HashMap<String, SqlitePool>>>,
+}
+
+
+async fn task_populate_mdata(mut wake: watch::Receiver<()>, state: ReamioApp<'_>) {
+    while let Ok(()) = wake.changed().await {
+        
+    }
 }
 
 async fn fetch_user_db(

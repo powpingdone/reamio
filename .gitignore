@@ -10,6 +10,7 @@ devenv.local.nix
 
 # emacs
 *~
+*\#*
 
 # Added by cargo
 
