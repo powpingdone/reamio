@@ -1199,6 +1199,7 @@ dependencies = [
  "axum",
  "futures",
  "minijinja",
+ "rand",
  "serde",
  "sqlx",
  "tokio",
