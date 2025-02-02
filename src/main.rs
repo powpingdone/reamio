@@ -66,60 +66,69 @@ async fn task_populate_mdata(
                 continue;
             };
             let fname = fname.to_string_lossy().to_owned().into_owned();
-            
+
             // spawn a task to add the thing
-            let mut music_db = fetch_user_db(music_dbs.clone(), user).await;
+            let mut music_db = fetch_user_db(music_dbs.clone(), &user).await;
             drop(tokio::spawn({
+                let user_db = user_db.clone();
                 async move {
-                    music_db
-                        .transaction::<_, (), sqlx::Error>(|txn| {
-                            Box::pin(async move {
-                                // insert
-                                let album = rand::random::<u64>().to_string();
-                                let album_id = sqlx::query(
-                                    "INSERT INTO album (name) VALUES (?) RETURNING id;",
-                                )
-                                .bind(album)
-                                .fetch_one(&mut **txn)
-                                .await?
-                                .get::<i64, _>("id");
-                                let artist = rand::random::<u64>().to_string();
-                                let artist_id = sqlx::query(
-                                    "INSERT INTO artist (name) VALUES (?) RETURNING id;",
-                                )
-                                .bind(artist)
-                                .fetch_one(&mut **txn)
-                                .await?
-                                .get::<i64, _>("id");
-                                let track_id = sqlx::query(
-                                    "INSERT INTO track (title) VALUES (?) RETURNING id;",
-                                )
-                                .bind(fname)
-                                .fetch_one(&mut **txn)
-                                .await?
-                                .get::<i64, _>("id");
+                    println!(
+                        "{:?}",
+                        music_db
+                            .transaction::<_, (), sqlx::Error>(|txn| {
+                                Box::pin(async move {
+                                    // insert
+                                    let album = rand::random::<u64>().to_string();
+                                    let album_id = sqlx::query(
+                                        "INSERT INTO album (name) VALUES (?) RETURNING id;",
+                                    )
+                                    .bind(album)
+                                    .fetch_one(&mut **txn)
+                                    .await?
+                                    .get::<i64, _>("id");
+                                    let artist = rand::random::<u64>().to_string();
+                                    let artist_id = sqlx::query(
+                                        "INSERT INTO artist (name) VALUES (?) RETURNING id;",
+                                    )
+                                    .bind(artist)
+                                    .fetch_one(&mut **txn)
+                                    .await?
+                                    .get::<i64, _>("id");
+                                    let track_id = sqlx::query(
+                                        "INSERT INTO track (title) VALUES (?) RETURNING id;",
+                                    )
+                                    .bind(fname)
+                                    .fetch_one(&mut **txn)
+                                    .await?
+                                    .get::<i64, _>("id");
 
-                                // join
-                                sqlx::query(
-                                    "INSERT INTO artist_tracks (track, artist) VALUES (?, ?);",
-                                )
-                                .bind(track_id)
-                                .bind(artist_id)
-                                .execute(&mut **txn)
-                                .await?;
-
-                                sqlx::query(
-                                    "INSERT INTO album_tracks (track, album) VALUES (?, ?);",
-                                )
-                                .bind(track_id)
-                                .bind(album_id)
-                                .execute(&mut **txn)
-                                .await?;
-                                Ok(())
+                                    // join
+                                    sqlx::query(
+                                        "INSERT INTO artist_tracks (track, artist) VALUES (?, ?);",
+                                    )
+                                    .bind(track_id)
+                                    .bind(artist_id)
+                                    .execute(&mut **txn)
+                                    .await?;
+                                    sqlx::query(
+                                        "INSERT INTO album_tracks (track, album) VALUES (?, ?);",
+                                    )
+                                    .bind(track_id)
+                                    .bind(album_id)
+                                    .execute(&mut **txn)
+                                    .await?;
+                                    Ok(())
+                                })
                             })
-                        })
+                            .await
+                    );
+                    // delete upload task
+                    sqlx::query("DELETE FROM uploaded_files WHERE name = ? AND path = ?;")
+                        .bind(user)
+                        .bind(path.to_str().unwrap())
+                        .execute(&user_db)
                         .await
-                        .unwrap()
+                        .unwrap();
                 }
             }));
         }
@@ -148,9 +157,6 @@ async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> 
         let Some(path) = mp_field.file_name() else {
             continue;
         };
-        let path: std::path::PathBuf = [dbg_path, std::path::Path::new(path)].into_iter().collect();
-
-        // TODO: create dirs
 
         // write out file
         let mut file = tokio::fs::OpenOptions::new()
