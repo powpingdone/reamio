@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     mem,
-    path::PathBuf,
     sync::{Arc, Weak},
 };
 
@@ -46,26 +45,26 @@ async fn task_populate_mdata(
     user_db: SqlitePool,
     music_dbs: MusicDbMapRef,
 ) {
-    // this breaks out on Err from changed().await when WakeTx is dropped
+    // this breaks on Err from changed().await when WakeTx has been fully dropped
     while let Ok(()) = wake.changed().await {
-        let uploaded_items = sqlx::query("SELECT user, path FROM uploaded_files;")
+        let uploaded_items = sqlx::query("SELECT fid, user, orig_path FROM uploaded_files;")
             .fetch_all(&user_db)
             .await
             .unwrap();
         for row in uploaded_items.into_iter() {
             // serialize
             let user: String = row.get("user");
-            let path = PathBuf::from(row.get::<String, _>("path"));
-            let Some(fname) = path.as_path().file_name() else {
-                sqlx::query("DELETE FROM uploaded_files WHERE name = ? AND path = ?;")
-                    .bind(user)
-                    .bind(path.to_str().unwrap())
-                    .execute(&user_db)
-                    .await
-                    .unwrap();
+            let path = row.get::<String, _>("orig_path");
+            let fid: i64 = row.get("fid");
+            
+            // check for file existence
+            if !tokio::fs::try_exists(format!("./devdir/temp/{fid}"))
+                .await
+                .is_ok_and(|x| x /*is true*/)
+            {
+                // TODO maint: clean up uploaded_files that have mismatched files
                 continue;
             };
-            let fname = fname.to_string_lossy().to_owned().into_owned();
 
             // spawn a task to add the thing
             let mut music_db = fetch_user_db(music_dbs.clone(), &user).await;
@@ -76,6 +75,7 @@ async fn task_populate_mdata(
                         "{:?}",
                         music_db
                             .transaction::<_, (), sqlx::Error>(|txn| {
+                                // TODO: actual tagging
                                 Box::pin(async move {
                                     // insert
                                     let album = rand::random::<u64>().to_string();
@@ -94,10 +94,13 @@ async fn task_populate_mdata(
                                     .fetch_one(&mut **txn)
                                     .await?
                                     .get::<i64, _>("id");
+                                    // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
+                                    // 
+                                    // TODO: add fname and dir
                                     let track_id = sqlx::query(
                                         "INSERT INTO track (title) VALUES (?) RETURNING id;",
                                     )
-                                    .bind(fname)
+                                    .bind(path)
                                     .fetch_one(&mut **txn)
                                     .await?
                                     .get::<i64, _>("id");
@@ -117,15 +120,25 @@ async fn task_populate_mdata(
                                     .bind(album_id)
                                     .execute(&mut **txn)
                                     .await?;
+                                    
+                                    // finally, move file
+                                    //
+                                    // note that track_id is secure because it's just a number
+                                    tokio::fs::rename(
+                                        format!("./devdir/temp/{fid}"),
+                                        format!("./devdir/{user}/{track_id}"),
+                                    )
+                                    .await
+                                    .unwrap();
                                     Ok(())
                                 })
                             })
                             .await
                     );
-                    // delete upload task
-                    sqlx::query("DELETE FROM uploaded_files WHERE name = ? AND path = ?;")
-                        .bind(user)
-                        .bind(path.to_str().unwrap())
+
+                    // delete upload task after previous txn
+                    sqlx::query("DELETE FROM uploaded_files WHERE fid = ?;")
+                        .bind(fid)
                         .execute(&user_db)
                         .await
                         .unwrap();
@@ -147,42 +160,53 @@ async fn fetch_user_db(
 }
 
 async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
-    // TODO: use actual path
-    let dbg_path = std::path::Path::new("./devdir/powpingdone");
     // ingest paths
-    while let Some(mut mp_field) = mp.next_field().await.unwrap() {
-        // create path
-        //
-        // TODO: path injection protection
-        let Some(path) = mp_field.file_name() else {
-            continue;
-        };
+    state
+        .user_db
+        .acquire()
+        .await
+        .unwrap()
+        .transaction::<_, _, sqlx::Error>(|txn| {
+            Box::pin(async move {
+                while let Some(mut mp_field) = mp.next_field().await.unwrap() {
+                    let Some(path) = mp_field.file_name() else {
+                        continue;
+                    };
 
-        // write out file
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&path)
-            .await
-            .unwrap();
-        while let Some(chunk) = mp_field.next().await {
-            let chunk = chunk.unwrap();
-            file.write_all(&chunk).await.unwrap();
-        }
-        file.sync_data().await.unwrap();
-        drop(file);
+                    // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
+                    let fid: i64 = sqlx::query(
+                        "INSERT INTO uploaded_files (orig_path, user) VALUES (?, ?) RETURNING fid;",
+                    )
+                    .bind(path)
+                    // TODO: dynamic users
+                    .bind("powpingdone")
+                    .fetch_one(&mut **txn)
+                    .await?
+                    .get("fid");
 
-        // update
-        sqlx::query("INSERT INTO uploaded_files (path, user) VALUES (?, ?)")
-            .bind(path.to_str().unwrap())
-            // TODO: dynamic users
-            .bind("powpingdone")
-            .execute(&state.user_db)
-            .await
-            .unwrap();
-        state.populate_mdata_waker.send(PopulateMetadata).unwrap();
-    }
-
+                    // write out file
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        // this is secure because fid is i64, and cannot represent anything other than [0-9]
+                        .open(format!("./devdir/temp/{fid}"))
+                        .await
+                        .unwrap();
+                    while let Some(chunk) = mp_field.next().await {
+                        let chunk = chunk.unwrap();
+                        file.write_all(&chunk).await.unwrap();
+                    }
+                    file.sync_data().await.unwrap();
+                    drop(file);
+                }
+                // wake the mdata
+                state.populate_mdata_waker.send(PopulateMetadata).unwrap();
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    // TODO maintenace task: on transaction error, the files are left behind. clean them up.
     return Redirect::to("/");
 }
 
@@ -323,7 +347,7 @@ async fn main() {
     let ppd_db = SqlitePoolOptions::new()
         .connect_with(
             SqliteConnectOptions::new()
-                .filename("./devdir/powpingdone/music.db")
+                .filename("./devdir/u/powpingdone/music.db")
                 .create_if_missing(true),
         )
         .await

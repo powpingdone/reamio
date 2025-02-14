@@ -4,4 +4,5 @@ DROP TABLE artist_tracks;
 DROP TABLE track;
 DROP TABLE artist;
 DROP TABLE album;
-DROP TABLE dir_tree; G
+DROP TABLE dir_tree;
+DROP TABLE dir; 
