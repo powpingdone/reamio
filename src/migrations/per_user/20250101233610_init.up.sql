@@ -1,8 +1,7 @@
 -- Add up migration script here
 CREATE TABLE dir (
        node INTEGER PRIMARY KEY, -- uid of the dir
-       name BLOB NOT NULL, -- dir display name
-       FOREIGN KEY (parent) REFERENCES dir (node)
+       name BLOB NOT NULL -- dir display name
 ) STRICT;
 
 CREATE TABLE dir_tee (

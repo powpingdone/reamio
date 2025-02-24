@@ -10,4 +10,4 @@ CREATE TABLE uploaded_files (
        user TEXT NOT NULL, -- file that has been assigned to user 
        fid INTEGER PRIMARY KEY, -- unique id that references the job
        FOREIGN KEY (user) REFERENCES users(username_lower) 
-) STRICT, WITHOUT ROWID;
+) STRICT;

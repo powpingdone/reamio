@@ -80,7 +80,7 @@ async fn task_populate_mdata(
                                     // insert
                                     let album = rand::random::<u64>().to_string();
                                     let album_id = sqlx::query(
-                                        "INSERT INTO album (name) VALUES (?) RETURNING id;",
+                                        "INSERT INTO album (name) VALUES ($1) RETURNING id;",
                                     )
                                     .bind(album)
                                     .fetch_one(&mut **txn)
@@ -88,7 +88,7 @@ async fn task_populate_mdata(
                                     .get::<i64, _>("id");
                                     let artist = rand::random::<u64>().to_string();
                                     let artist_id = sqlx::query(
-                                        "INSERT INTO artist (name) VALUES (?) RETURNING id;",
+                                        "INSERT INTO artist (name) VALUES ($1) RETURNING id;",
                                     )
                                     .bind(artist)
                                     .fetch_one(&mut **txn)
@@ -98,7 +98,7 @@ async fn task_populate_mdata(
                                     // 
                                     // TODO: add fname and dir
                                     let track_id = sqlx::query(
-                                        "INSERT INTO track (title) VALUES (?) RETURNING id;",
+                                        "INSERT INTO track (title) VALUES ($1) RETURNING id;",
                                     )
                                     .bind(path)
                                     .fetch_one(&mut **txn)
@@ -107,14 +107,14 @@ async fn task_populate_mdata(
 
                                     // join
                                     sqlx::query(
-                                        "INSERT INTO artist_tracks (track, artist) VALUES (?, ?);",
+                                        "INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);",
                                     )
                                     .bind(track_id)
                                     .bind(artist_id)
                                     .execute(&mut **txn)
                                     .await?;
                                     sqlx::query(
-                                        "INSERT INTO album_tracks (track, album) VALUES (?, ?);",
+                                        "INSERT INTO album_tracks (track, album) VALUES ($1, $2);",
                                     )
                                     .bind(track_id)
                                     .bind(album_id)
@@ -137,7 +137,7 @@ async fn task_populate_mdata(
                     );
 
                     // delete upload task after previous txn
-                    sqlx::query("DELETE FROM uploaded_files WHERE fid = ?;")
+                    sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
                         .bind(fid)
                         .execute(&user_db)
                         .await
@@ -175,7 +175,7 @@ async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> 
 
                     // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
                     let fid: i64 = sqlx::query(
-                        "INSERT INTO uploaded_files (orig_path, user) VALUES (?, ?) RETURNING fid;",
+                        "INSERT INTO uploaded_files (orig_path, user, fid) VALUES ($1, $2, NULL) RETURNING fid;",
                     )
                     .bind(path)
                     // TODO: dynamic users
@@ -340,6 +340,10 @@ async fn main() {
         .unwrap();
     sqlx::migrate!("src/migrations/userdb")
         .run(&user_db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO users (username_lower, username_orig, phc) VALUES ('powpingdone', 'powpingdone', '');")
+        .execute(&user_db)
         .await
         .unwrap();
 
