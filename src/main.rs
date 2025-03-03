@@ -22,6 +22,10 @@ use tokio::{
     sync::{watch, RwLock},
 };
 
+mod error;
+
+use crate::error::*;
+
 type JinjaRef<'a> = Weak<Environment<'a>>;
 type MusicDbMapRef = Weak<RwLock<HashMap<String, SqlitePool>>>;
 type WakeTx<T> = watch::Sender<T>;
@@ -73,7 +77,7 @@ async fn task_populate_mdata(
             drop(tokio::spawn({
                 let user_db = user_db.clone();
                 async move {
-                    println!("{:?}", music_db.transaction::<_, (), sqlx::Error>(|txn| {
+                    let ret = music_db.transaction::<_, (), ReamioProcessingErrorInternal>(|txn| {
                         // TODO: actual tagging
                         //
                         // TODO: error handling
@@ -146,6 +150,7 @@ async fn task_populate_mdata(
 
                             // insert track
                             let track_name = rand::random::<u64>().to_string();
+
                             // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
                             let track_id =
                                 sqlx::query("INSERT INTO track (title, dir, fname) VALUES ($1, $2, $3) RETURNING id;")
@@ -171,17 +176,24 @@ async fn task_populate_mdata(
                             // finally, move file
                             //
                             // note that track_id and fid is secure because it's just a number
-                            tokio::fs::rename(format!("./devdir/temp/{fid}"), format!("./devdir/u/{user}/{track_id}")).await.unwrap();
+                            tokio::fs::rename(format!("./devdir/temp/{fid}"), format!("./devdir/u/{user}/{track_id}")).await?;
                             Ok(())
                         })
-                    }).await);
+                    }).await;
+
+                    if let Err(err) = ret {
+                        // TODO: report upload errors to the user
+                        println!("while doing upload processing: {err:?}");
+                    }
 
                     // delete upload task after previous txn
-                    sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
+                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
                         .bind(fid)
                         .execute(&user_db)
-                        .await
-                        .unwrap();
+                        .await;
+                    if let Err(err) = ret {
+                        println!("when deleting from uploaded_files: {err:?}");
+                    }
                 }
             }));
         }
@@ -201,7 +213,7 @@ async fn fetch_user_db(
 
 async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
     // ingest paths
-    state.user_db.acquire().await.unwrap().transaction::<_, _, sqlx::Error>(|txn| {
+    state.user_db.acquire().await.unwrap().transaction::<_, _, ReamioWebError>(|txn| {
         Box::pin(async move {
             while let Some(mut mp_field) = mp.next_field().await.unwrap() {
                 let Some(path) = mp_field.file_name() else {
