@@ -1,30 +1,53 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, State},
-    response::{Html, IntoResponse, Redirect},
-    routing::{get, post},
+    extract::{
+        DefaultBodyLimit,
+        Multipart,
+        State,
+    },
+    response::{
+        Html,
+        IntoResponse,
+        Redirect,
+    },
+    routing::{
+        get,
+        post,
+    },
     Router,
 };
 use futures::StreamExt;
 use minijinja::Environment;
 use serde::Serialize;
-use sqlx::{pool::PoolConnection, prelude::*};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    pool::PoolConnection,
+    prelude::*,
+};
+use sqlx::{
+    sqlite::{
+        SqliteConnectOptions,
+        SqlitePoolOptions,
+    },
     SqlitePool,
 };
 use std::{
     collections::HashMap,
     mem,
-    sync::{Arc, Weak},
+    sync::{
+        Arc,
+        Weak,
+    },
 };
 use tokio::{
     io::AsyncWriteExt,
-    sync::{watch, RwLock},
+    sync::{
+        watch,
+        RwLock,
+    },
 };
 
 mod error;
 
-use crate::error::*;
+pub use crate::error::*;
 
 type JinjaRef<'a> = Weak<Environment<'a>>;
 type MusicDbMapRef = Weak<RwLock<HashMap<String, SqlitePool>>>;
@@ -43,36 +66,28 @@ pub struct ReamioApp<'a> {
 pub struct PopulateMetadata;
 
 // wake on new tracks
-async fn task_populate_mdata(
-    mut wake: WakeRx<PopulateMetadata>,
-    user_db: SqlitePool,
-    music_dbs: MusicDbMapRef,
-) {
+async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: SqlitePool, music_dbs: MusicDbMapRef) {
+    // TODO: on task_populate_mdata or other subtask panics, what should we do? is
+    // this an architecture issue?
+    //
     // this breaks on Err from changed().await when WakeTx has been fully dropped
     while let Ok(()) = wake.changed().await {
-        let uploaded_items = sqlx::query("SELECT fid, user, orig_path FROM uploaded_files;")
-            .fetch_all(&user_db)
-            .await
-            .unwrap();
+        // this realistically _really_ shouldn't fail
+        let uploaded_items =
+            sqlx::query("SELECT fid, user, orig_path FROM uploaded_files;").fetch_all(&user_db).await.unwrap();
         for row in uploaded_items.into_iter() {
             // serialize
             let user: String = row.get("user");
             let path = row.get::<String, _>("orig_path");
             let fid: i64 = row.get("fid");
 
-            // check for file existence
-            if !tokio::fs::try_exists(format!("./devdir/temp/{fid}"))
-                .await
-                .is_ok_and(
-                    |x| x,
-                    // is true
-                )
-            {
+            // check for file existence, which is Result::Ok and boolean true
+            if !tokio::fs::try_exists(format!("./devdir/temp/{fid}")).await.is_ok_and(|x| x) {
                 // TODO maint: clean up uploaded_files that have mismatched files
                 continue;
             };
 
-            // spawn a task to add the thing
+            // spawn a task to add the track 
             let mut music_db = fetch_user_db(music_dbs.clone(), &user).await;
             drop(tokio::spawn({
                 let user_db = user_db.clone();
@@ -103,12 +118,33 @@ async fn task_populate_mdata(
                             // insert dirs
                             let mut path_split = path.split('/').collect::<Vec<_>>();
                             let Some(fname) = path_split.pop() else {
-                                panic!("item must have fname")
+                                return Err(
+                                    ReamioPathError {
+                                        msg: "path contains nothing, not even a filename".to_owned(),
+                                    }.into(),
+                                )
                             };
+                            if fname.trim().is_empty() {
+                                return Err(
+                                    ReamioPathError {
+                                        msg: format!("filename \"{fname}\" was trimmed into emptyness"),
+                                    }.into(),
+                                )
+                            }
+                            let fname = fname.trim();
                             let path_split = path_split;
                             let parent_dir = {
                                 let mut dir = None::<i64>;
                                 for frag in path_split {
+                                    if frag.trim().is_empty() {
+                                        return Err(
+                                            ReamioPathError {
+                                                msg: format!("folder \"{frag}\" was trimmed into emptyness"),
+                                            }.into(),
+                                        )
+                                    }
+                                    let frag = frag.trim();
+
                                     // list current directory
                                     let ls =
                                         sqlx::query(
@@ -180,17 +216,13 @@ async fn task_populate_mdata(
                             Ok(())
                         })
                     }).await;
-
                     if let Err(err) = ret {
                         // TODO: report upload errors to the user
                         println!("while doing upload processing: {err:?}");
                     }
 
                     // delete upload task after previous txn
-                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
-                        .bind(fid)
-                        .execute(&user_db)
-                        .await;
+                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;").bind(fid).execute(&user_db).await;
                     if let Err(err) = ret {
                         println!("when deleting from uploaded_files: {err:?}");
                     }
@@ -200,10 +232,7 @@ async fn task_populate_mdata(
     }
 }
 
-async fn fetch_user_db(
-    music_dbs: MusicDbMapRef,
-    user: impl AsRef<str>,
-) -> PoolConnection<sqlx::Sqlite> {
+async fn fetch_user_db(music_dbs: MusicDbMapRef, user: impl AsRef<str>) -> PoolConnection<sqlx::Sqlite> {
     // TODO: create pools on demand
     let music_db_hold = music_dbs.upgrade().unwrap();
     let music_db = music_db_hold.read().await;
@@ -278,8 +307,9 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     }
 
     // mega query
-    let mut rows = sqlx::query(
-        r#"
+    let mut rows =
+        sqlx::query(
+            r#"
     SELECT
       artist.name AS artist,
       track.title AS track,
@@ -292,8 +322,7 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     JOIN album_tracks ON track.id = album_tracks.track
     JOIN album ON album_tracks.album = album.id
     ORDER BY artist, album;"#,
-    )
-    .fetch(&mut *db);
+        ).fetch(&mut *db);
 
     // init structs
     let mut artists: Vec<Artist> = vec![];
@@ -336,9 +365,7 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
             al_t = row.get("album");
             al_id = row.get("al_id");
         }
-        tracks.push(Track {
-            title: row.get("track"),
-        });
+        tracks.push(Track { title: row.get("track") });
     }
     if ar_id != -1 {
         // construct final artist
@@ -355,44 +382,26 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     }
 
     // render
-    return Html(
-        state
-            .jinja
-            .upgrade()
-            .unwrap()
-            .get_template("home.html")
-            .unwrap()
-            .render(minijinja::context! {
-                artists
-            })
-            .unwrap(),
-    )
-    .into_response();
+    return Html(state.jinja.upgrade().unwrap().get_template("home.html").unwrap().render(minijinja::context!{
+        artists
+    }).unwrap()).into_response();
 }
 
 fn load_templates() -> Arc<Environment<'static>> {
     let mut ret = Environment::new();
-    ret.add_template("base.html", include_str!("templates/base.html.jinja"))
-        .unwrap();
-    ret.add_template("home.html", include_str!("templates/home.html.jinja"))
-        .unwrap();
+    ret.add_template("base.html", include_str!("templates/base.html.jinja")).unwrap();
+    ret.add_template("home.html", include_str!("templates/home.html.jinja")).unwrap();
     Arc::new(ret)
 }
 
 #[tokio::main]
 async fn main() {
-    let user_db = SqlitePoolOptions::new()
-        .connect_with(
-            SqliteConnectOptions::new()
-                .filename("./devdir/user.db")
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-    sqlx::migrate!("src/migrations/userdb")
-        .run(&user_db)
-        .await
-        .unwrap();
+    let user_db =
+        SqlitePoolOptions::new()
+            .connect_with(SqliteConnectOptions::new().filename("./devdir/user.db").create_if_missing(true))
+            .await
+            .unwrap();
+    sqlx::migrate!("src/migrations/userdb").run(&user_db).await.unwrap();
     sqlx::query(
         "INSERT OR IGNORE INTO users (username_lower, username_orig, phc) VALUES ('powpingdone', 'powpingdone', '');",
     )
@@ -401,35 +410,24 @@ async fn main() {
         .unwrap();
 
     // testing db
-    let ppd_db = SqlitePoolOptions::new()
-        .connect_with(
-            SqliteConnectOptions::new()
-                .filename("./devdir/u/powpingdone/music.db")
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-    sqlx::migrate!("src/migrations/per_user")
-        .run(&ppd_db)
-        .await
-        .unwrap();
+    let ppd_db =
+        SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new().filename("./devdir/u/powpingdone/music.db").create_if_missing(true),
+            )
+            .await
+            .unwrap();
+    sqlx::migrate!("src/migrations/per_user").run(&ppd_db).await.unwrap();
 
     // setup state props
     let jinja = load_templates();
     let w_jinja = Arc::downgrade(&jinja);
-    let music_dbs = Arc::new(RwLock::new(HashMap::from([(
-        "powpingdone".to_owned(),
-        ppd_db,
-    )])));
+    let music_dbs = Arc::new(RwLock::new(HashMap::from([("powpingdone".to_owned(), ppd_db)])));
     let w_music_dbs = Arc::downgrade(&music_dbs);
 
     // fire tasks
     let (tx_mdata, rx_mdata) = watch::channel(PopulateMetadata);
-    let mdata_bg_task = tokio::spawn(task_populate_mdata(
-        rx_mdata,
-        user_db.clone(),
-        w_music_dbs.clone(),
-    ));
+    let mdata_bg_task = tokio::spawn(task_populate_mdata(rx_mdata, user_db.clone(), w_music_dbs.clone()));
 
     // run server
     let state = ReamioApp {
@@ -438,21 +436,10 @@ async fn main() {
         music_dbs: w_music_dbs,
         populate_mdata_waker: tx_mdata,
     };
-    let router = Router::new()
-        .route("/", get(main_page))
-        .merge(
-            Router::new()
-                .route("/upload", post(upload_track))
-                // TODO: dynamically enable large uploads via an in-server toggle
-                .layer(DefaultBodyLimit::disable()),
-        )
-        .with_state(state);
-    axum::serve(
-        tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(),
-        router,
-    )
-    .await
-    .unwrap();
+    let router = Router::new().route("/", get(main_page)).merge(Router::new().route("/upload", post(upload_track))
+        // TODO: dynamically enable large uploads via an in-server toggle
+        .layer(DefaultBodyLimit::disable())).with_state(state);
+    axum::serve(tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(), router).await.unwrap();
 
     // cleanup, and drop everything
     drop(jinja);

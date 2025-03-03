@@ -17,6 +17,7 @@ impl From<sqlx::Error> for ReamioWebError {
 pub enum ReamioProcessingErrorInternal {
     SQLError(sqlx::Error),
     IOError(std::io::Error),
+    PathError(ReamioPathError),
 }
 
 impl From<sqlx::Error> for ReamioProcessingErrorInternal {
@@ -29,4 +30,15 @@ impl From<std::io::Error> for ReamioProcessingErrorInternal {
     fn from(value: std::io::Error) -> Self {
         Self::IOError(value)
     }
+}
+
+impl From<ReamioPathError> for ReamioProcessingErrorInternal {
+    fn from(value: ReamioPathError) -> Self {
+        Self::PathError(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct ReamioPathError {
+    pub msg: String,
 }
