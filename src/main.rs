@@ -1,9 +1,3 @@
-use std::{
-    collections::HashMap,
-    mem,
-    sync::{Arc, Weak},
-};
-
 use axum::{
     extract::{DefaultBodyLimit, Multipart, State},
     response::{Html, IntoResponse, Redirect},
@@ -17,6 +11,11 @@ use sqlx::{pool::PoolConnection, prelude::*};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
+};
+use std::{
+    collections::HashMap,
+    mem,
+    sync::{Arc, Weak},
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -56,11 +55,14 @@ async fn task_populate_mdata(
             let user: String = row.get("user");
             let path = row.get::<String, _>("orig_path");
             let fid: i64 = row.get("fid");
-            
+
             // check for file existence
             if !tokio::fs::try_exists(format!("./devdir/temp/{fid}"))
                 .await
-                .is_ok_and(|x| x /*is true*/)
+                .is_ok_and(
+                    |x| x,
+                    // is true
+                )
             {
                 // TODO maint: clean up uploaded_files that have mismatched files
                 continue;
@@ -71,70 +73,108 @@ async fn task_populate_mdata(
             drop(tokio::spawn({
                 let user_db = user_db.clone();
                 async move {
-                    println!(
-                        "{:?}",
-                        music_db
-                            .transaction::<_, (), sqlx::Error>(|txn| {
-                                // TODO: actual tagging
-                                Box::pin(async move {
-                                    // insert
-                                    let album = rand::random::<u64>().to_string();
-                                    let album_id = sqlx::query(
-                                        "INSERT INTO album (name) VALUES ($1) RETURNING id;",
-                                    )
+                    println!("{:?}", music_db.transaction::<_, (), sqlx::Error>(|txn| {
+                        // TODO: actual tagging
+                        //
+                        // TODO: error handling
+                        Box::pin(async move {
+                            // insert track mdata
+                            //
+                            // TODO: ordering is important because this isnt BEGIN IMMEDIATE
+                            let album = rand::random::<u64>().to_string();
+                            let album_id =
+                                sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
                                     .bind(album)
                                     .fetch_one(&mut **txn)
                                     .await?
                                     .get::<i64, _>("id");
-                                    let artist = rand::random::<u64>().to_string();
-                                    let artist_id = sqlx::query(
-                                        "INSERT INTO artist (name) VALUES ($1) RETURNING id;",
-                                    )
+                            let artist = rand::random::<u64>().to_string();
+                            let artist_id =
+                                sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
                                     .bind(artist)
                                     .fetch_one(&mut **txn)
                                     .await?
                                     .get::<i64, _>("id");
-                                    // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
-                                    // 
-                                    // TODO: add fname and dir
-                                    let track_id = sqlx::query(
-                                        "INSERT INTO track (title) VALUES ($1) RETURNING id;",
-                                    )
-                                    .bind(path)
+
+                            // insert dirs
+                            let mut path_split = path.split('/').collect::<Vec<_>>();
+                            let Some(fname) = path_split.pop() else {
+                                panic!("item must have fname")
+                            };
+                            let path_split = path_split;
+                            let parent_dir = {
+                                let mut dir = None::<i64>;
+                                for frag in path_split {
+                                    // list current directory
+                                    let ls =
+                                        sqlx::query(
+                                            r#"
+                                            SELECT dir.node, dir.name 
+                                            FROM dir_tree JOIN dir ON dir.node = dir_tree.node
+                                            WHERE dir_tree.parent IS $1;
+                                            "#,
+                                        )
+                                            .bind(dir)
+                                            .fetch_all(&mut **txn)
+                                            .await?
+                                            .iter()
+                                            .map(|x| (x.get("name"), x.get("node")))
+                                            .collect::<HashMap<String, i64>>();
+                                    if let Some(pt) = ls.get(frag) {
+                                        // cd
+                                        dir = Some(*pt);
+                                    } else {
+                                        // mkdir
+                                        let pt =
+                                            sqlx::query("INSERT INTO dir (name) VALUES ($1) RETURNING node;")
+                                                .bind(frag)
+                                                .fetch_one(&mut **txn)
+                                                .await?
+                                                .get::<i64, _>("node");
+                                        sqlx::query("INSERT INTO dir_tree (node, parent) VALUES ($1, $2);")
+                                            .bind(pt)
+                                            .bind(dir)
+                                            .execute(&mut **txn)
+                                            .await?;
+
+                                        // cd
+                                        dir = Some(pt);
+                                    }
+                                }
+                                dir
+                            };
+
+                            // insert track
+                            let track_name = rand::random::<u64>().to_string();
+                            // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
+                            let track_id =
+                                sqlx::query("INSERT INTO track (title, dir, fname) VALUES ($1, $2, $3) RETURNING id;")
+                                    .bind(track_name)
+                                    .bind(parent_dir)
+                                    .bind(fname)
                                     .fetch_one(&mut **txn)
                                     .await?
                                     .get::<i64, _>("id");
 
-                                    // join
-                                    sqlx::query(
-                                        "INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);",
-                                    )
-                                    .bind(track_id)
-                                    .bind(artist_id)
-                                    .execute(&mut **txn)
-                                    .await?;
-                                    sqlx::query(
-                                        "INSERT INTO album_tracks (track, album) VALUES ($1, $2);",
-                                    )
-                                    .bind(track_id)
-                                    .bind(album_id)
-                                    .execute(&mut **txn)
-                                    .await?;
-                                    
-                                    // finally, move file
-                                    //
-                                    // note that track_id is secure because it's just a number
-                                    tokio::fs::rename(
-                                        format!("./devdir/temp/{fid}"),
-                                        format!("./devdir/{user}/{track_id}"),
-                                    )
-                                    .await
-                                    .unwrap();
-                                    Ok(())
-                                })
-                            })
-                            .await
-                    );
+                            // join
+                            sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
+                                .bind(track_id)
+                                .bind(artist_id)
+                                .execute(&mut **txn)
+                                .await?;
+                            sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
+                                .bind(track_id)
+                                .bind(album_id)
+                                .execute(&mut **txn)
+                                .await?;
+
+                            // finally, move file
+                            //
+                            // note that track_id and fid is secure because it's just a number
+                            tokio::fs::rename(format!("./devdir/temp/{fid}"), format!("./devdir/u/{user}/{track_id}")).await.unwrap();
+                            Ok(())
+                        })
+                    }).await);
 
                     // delete upload task after previous txn
                     sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
@@ -161,52 +201,46 @@ async fn fetch_user_db(
 
 async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
     // ingest paths
-    state
-        .user_db
-        .acquire()
-        .await
-        .unwrap()
-        .transaction::<_, _, sqlx::Error>(|txn| {
-            Box::pin(async move {
-                while let Some(mut mp_field) = mp.next_field().await.unwrap() {
-                    let Some(path) = mp_field.file_name() else {
-                        continue;
-                    };
+    state.user_db.acquire().await.unwrap().transaction::<_, _, sqlx::Error>(|txn| {
+        Box::pin(async move {
+            while let Some(mut mp_field) = mp.next_field().await.unwrap() {
+                let Some(path) = mp_field.file_name() else {
+                    continue;
+                };
 
-                    // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
-                    let fid: i64 = sqlx::query(
+                // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
+                let fid: i64 =
+                    sqlx::query(
                         "INSERT INTO uploaded_files (orig_path, user, fid) VALUES ($1, $2, NULL) RETURNING fid;",
                     )
-                    .bind(path)
-                    // TODO: dynamic users
-                    .bind("powpingdone")
-                    .fetch_one(&mut **txn)
-                    .await?
-                    .get("fid");
+                        .bind(path)
+                        // TODO: dynamic users
+                        .bind("powpingdone")
+                        .fetch_one(&mut **txn)
+                        .await?
+                        .get("fid");
 
-                    // write out file
-                    let mut file = tokio::fs::OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        // this is secure because fid is i64, and cannot represent anything other than [0-9]
-                        .open(format!("./devdir/temp/{fid}"))
-                        .await
-                        .unwrap();
-                    while let Some(chunk) = mp_field.next().await {
-                        let chunk = chunk.unwrap();
-                        file.write_all(&chunk).await.unwrap();
-                    }
-                    file.sync_data().await.unwrap();
-                    drop(file);
+                // write out file
+                let mut file = tokio::fs::OpenOptions::new().create(true).write(true)
+                    // this is secure because fid is i64, and cannot represent anything other than
+                    // [0-9]
+                    .open(format!("./devdir/temp/{fid}")).await.unwrap();
+                while let Some(chunk) = mp_field.next().await {
+                    let chunk = chunk.unwrap();
+                    file.write_all(&chunk).await.unwrap();
                 }
-                // wake the mdata
-                state.populate_mdata_waker.send(PopulateMetadata).unwrap();
-                Ok(())
-            })
+                file.sync_data().await.unwrap();
+                drop(file);
+            }
+
+            // wake the mdata
+            state.populate_mdata_waker.send(PopulateMetadata).unwrap();
+            Ok(())
         })
-        .await
-        .unwrap();
-    // TODO maintenace task: on transaction error, the files are left behind. clean them up.
+    }).await.unwrap();
+
+    // TODO maintenace task: on transaction error, the files are left behind. clean
+    // them up.
     return Redirect::to("/");
 }
 
@@ -218,11 +252,13 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
     struct Track {
         pub title: String,
     }
+
     #[derive(Serialize)]
     struct Album {
         pub title: String,
         pub tracks: Vec<Track>,
     }
+
     #[derive(Serialize)]
     struct Artist {
         pub title: String,
@@ -271,6 +307,7 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
                     albums: mem::take(&mut albums),
                 });
             }
+
             // init (new) states
             ar_t = row.get("artist");
             ar_id = row.get("ar_id");
@@ -282,11 +319,11 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
                 title: mem::take(&mut al_t),
                 tracks: mem::take(&mut tracks),
             });
+
             // new album
             al_t = row.get("album");
             al_id = row.get("al_id");
         }
-
         tracks.push(Track {
             title: row.get("track"),
         });
@@ -313,7 +350,9 @@ async fn main_page(State(state): State<ReamioApp<'_>>) -> impl IntoResponse {
             .unwrap()
             .get_template("home.html")
             .unwrap()
-            .render(minijinja::context! { artists })
+            .render(minijinja::context! {
+                artists
+            })
             .unwrap(),
     )
     .into_response();
@@ -342,7 +381,9 @@ async fn main() {
         .run(&user_db)
         .await
         .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO users (username_lower, username_orig, phc) VALUES ('powpingdone', 'powpingdone', '');")
+    sqlx::query(
+        "INSERT OR IGNORE INTO users (username_lower, username_orig, phc) VALUES ('powpingdone', 'powpingdone', '');",
+    )
         .execute(&user_db)
         .await
         .unwrap();

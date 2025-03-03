@@ -1,22 +1,23 @@
 -- Add up migration script here
 CREATE TABLE dir (
        node INTEGER PRIMARY KEY, -- uid of the dir
-       name BLOB NOT NULL -- dir display name
+       name TEXT NOT NULL -- dir display name
 ) STRICT;
 
-CREATE TABLE dir_tee (
+CREATE TABLE dir_tree (
        -- there is a way to create a symlink loop, but it would most likely require editing the db
        node INTEGER UNIQUE NOT NULL,  -- child dir
        parent INTEGER NULL, -- parent dir, NULL means root
-       PRIMARY KEY (node, parent),
        FOREIGN KEY (parent) REFERENCES dir (node)
 ) STRICT;
+
+CREATE INDEX dir_tree_parent ON dir_tree (parent);
 
 CREATE TABLE track (
       id INTEGER PRIMARY KEY,
       title TEXT NOT NULL,
       dir INTEGER NULL,
-      fname BLOB NOT NULL,
+      fname TEXT NOT NULL,
       FOREIGN KEY (dir) REFERENCES dir (node)
 ) STRICT;
 
