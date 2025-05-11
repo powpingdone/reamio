@@ -5,7 +5,6 @@ use axum::{
         State,
     },
     response::{
-        Html,
         IntoResponse,
         Redirect,
     },
@@ -16,7 +15,6 @@ use axum::{
     Router,
 };
 use futures::StreamExt;
-use minijinja::Environment;
 use sqlx::{
     pool::PoolConnection,
     prelude::*,
@@ -30,7 +28,6 @@ use sqlx::{
 };
 use std::{
     collections::HashMap,
-    mem,
     sync::{
         Arc,
         Weak,
@@ -45,20 +42,16 @@ use tokio::{
 };
 
 mod error;
-mod pages;
 
 pub use crate::error::*;
-pub use crate::pages::*;
 
-type JinjaRef<'a> = Weak<Environment<'a>>;
 type MusicDbMapRef = Weak<RwLock<HashMap<String, SqlitePool>>>;
 type WakeTx<T> = watch::Sender<T>;
 type WakeRx<T> = watch::Receiver<T>;
 
 #[derive(Clone)]
-pub struct ReamioApp<'a> {
+pub struct ReamioApp {
     pub user_db: SqlitePool,
-    pub jinja: JinjaRef<'a>,
     pub music_dbs: MusicDbMapRef,
     pub populate_mdata_waker: WakeTx<PopulateMetadata>,
 }
@@ -233,6 +226,8 @@ async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: Sqlite
     }
 }
 
+async fn upload_csl() -> impl IntoResponse {}
+
 async fn fetch_user_db(music_dbs: MusicDbMapRef, user: impl AsRef<str>) -> PoolConnection<sqlx::Sqlite> {
     // TODO: create pools on demand
     let music_db_hold = music_dbs.upgrade().unwrap();
@@ -241,7 +236,7 @@ async fn fetch_user_db(music_dbs: MusicDbMapRef, user: impl AsRef<str>) -> PoolC
     db_pool.acquire().await.unwrap()
 }
 
-async fn upload_track(State(state): State<ReamioApp<'_>>, mut mp: Multipart) -> impl IntoResponse {
+async fn upload_track(State(state): State<ReamioApp>, mut mp: Multipart) -> impl IntoResponse {
     // ingest paths
     state.user_db.acquire().await.unwrap().transaction::<_, _, ReamioWebError>(|txn| {
         Box::pin(async move {
@@ -312,8 +307,6 @@ async fn main() {
     sqlx::migrate!("src/migrations/per_user").run(&ppd_db).await.unwrap();
 
     // setup state props
-    let jinja = load_templates();
-    let w_jinja = Arc::downgrade(&jinja);
     let music_dbs = Arc::new(RwLock::new(HashMap::from([("powpingdone".to_owned(), ppd_db)])));
     let w_music_dbs = Arc::downgrade(&music_dbs);
 
@@ -324,17 +317,15 @@ async fn main() {
     // run server
     let state = ReamioApp {
         user_db,
-        jinja: w_jinja,
         music_dbs: w_music_dbs,
         populate_mdata_waker: tx_mdata,
     };
-    let router = Router::new().route("/", get(main_page)).merge(Router::new().route("/upload", post(upload_track))
+    let router = Router::new().route("/", get(upload_csl )).merge(Router::new().route("/upload", post(upload_track))
         // TODO: dynamically enable large uploads via an in-server toggle
         .layer(DefaultBodyLimit::disable())).with_state(state);
     axum::serve(tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(), router).await.unwrap();
 
     // cleanup, and drop everything
-    drop(jinja);
     drop(music_dbs);
     drop(mdata_bg_task.await);
 }

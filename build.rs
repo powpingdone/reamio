@@ -1,4 +1,3 @@
 fn main() {
-    println!("cargo:rerun-if-changed=src/migrations");
-    println!("cargo:rerun-if-changed=src/templates");
+    println!("cargo:rerun-if-changed=server/src/migrations");
 }

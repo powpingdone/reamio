@@ -1,0 +1,12 @@
+[package]
+name = "reamioserver"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8", features = ["http2", "macros", "multipart"] }
+futures = "0.3"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+tokio = { version = "1.42", features = ["full"] }
