@@ -1,44 +1,20 @@
 use axum::{
-    extract::{
-        DefaultBodyLimit,
-        Multipart,
-        State,
-    },
-    response::{
-        IntoResponse,
-        Redirect,
-    },
-    routing::{
-        get,
-        post,
-    },
-    Router,
+    extract::{DefaultBodyLimit, Multipart, State}, response::{IntoResponse, Redirect}, routing::{get, post}, Json, Router
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
+use serde::Deserialize;
 use sqlx::{
-    pool::PoolConnection,
-    prelude::*,
-};
-use sqlx::{
-    sqlite::{
-        SqliteConnectOptions,
-        SqlitePoolOptions,
-    },
     SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use sqlx::{pool::PoolConnection, prelude::*};
 use std::{
     collections::HashMap,
-    sync::{
-        Arc,
-        Weak,
-    },
+    sync::{Arc, Weak},
 };
 use tokio::{
     io::AsyncWriteExt,
-    sync::{
-        watch,
-        RwLock,
-    },
+    sync::{RwLock, watch},
 };
 
 mod error;
@@ -60,15 +36,21 @@ pub struct ReamioApp {
 pub struct PopulateMetadata;
 
 // wake on new tracks
-async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: SqlitePool, music_dbs: MusicDbMapRef) {
+async fn task_populate_mdata(
+    mut wake: WakeRx<PopulateMetadata>,
+    user_db: SqlitePool,
+    music_dbs: MusicDbMapRef,
+) {
     // TODO: on task_populate_mdata or other subtask panics, what should we do? is
     // this an architecture issue?
     //
     // this breaks on Err from changed().await when WakeTx has been fully dropped
     while let Ok(()) = wake.changed().await {
         // this realistically _really_ shouldn't fail
-        let uploaded_items =
-            sqlx::query("SELECT fid, user, orig_path FROM uploaded_files;").fetch_all(&user_db).await.unwrap();
+        let uploaded_items = sqlx::query("SELECT fid, user, orig_path FROM uploaded_files;")
+            .fetch_all(&user_db)
+            .await
+            .unwrap();
         for row in uploaded_items.into_iter() {
             // serialize
             let user: String = row.get("user");
@@ -76,13 +58,16 @@ async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: Sqlite
             let fid: i64 = row.get("fid");
 
             // check for file existence, which is Result::Ok and boolean true
-            if !tokio::fs::try_exists(format!("./devdir/temp/{fid}")).await.is_ok_and(|x| x) {
+            if !tokio::fs::try_exists(format!("./devdir/temp/{fid}"))
+                .await
+                .is_ok_and(|x| x)
+            {
                 // TODO maint: clean up uploaded_files that have mismatched files
                 continue;
             };
 
-            // spawn a task to add the track 
-            let mut music_db = fetch_user_db(music_dbs.clone(), &user).await;
+            // spawn a task to add the track
+            let mut music_db = fetch_users_music_db(music_dbs.clone(), &user).await;
             drop(tokio::spawn({
                 let user_db = user_db.clone();
                 async move {
@@ -93,7 +78,8 @@ async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: Sqlite
                         Box::pin(async move {
                             // insert track mdata
                             //
-                            // TODO: ordering is important because this isnt BEGIN IMMEDIATE
+                            // NOTE: ordering is important because this isn't BEGIN IMMEDIATE
+                            // tldr: if you add a read sql statement before a write in this transaction, this whole thing must be updated
                             let album = rand::random::<u64>().to_string();
                             let album_id =
                                 sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
@@ -216,7 +202,10 @@ async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: Sqlite
                     }
 
                     // delete upload task after previous txn
-                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;").bind(fid).execute(&user_db).await;
+                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
+                        .bind(fid)
+                        .execute(&user_db)
+                        .await;
                     if let Err(err) = ret {
                         println!("when deleting from uploaded_files: {err:?}");
                     }
@@ -226,10 +215,11 @@ async fn task_populate_mdata(mut wake: WakeRx<PopulateMetadata>, user_db: Sqlite
     }
 }
 
-async fn upload_csl() -> impl IntoResponse {}
-
-async fn fetch_user_db(music_dbs: MusicDbMapRef, user: impl AsRef<str>) -> PoolConnection<sqlx::Sqlite> {
-    // TODO: create pools on demand
+async fn fetch_users_music_db(
+    music_dbs: MusicDbMapRef,
+    user: impl AsRef<str>,
+) -> PoolConnection<sqlx::Sqlite> {
+    // TODO: create pools on demand, user management
     let music_db_hold = music_dbs.upgrade().unwrap();
     let music_db = music_db_hold.read().await;
     let db_pool = music_db.get(user.as_ref()).unwrap();
@@ -281,14 +271,59 @@ async fn upload_track(State(state): State<ReamioApp>, mut mp: Multipart) -> impl
     return Redirect::to("/");
 }
 
+async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResponse {
+    
+    #[derive(Deserialize)]
+    struct Artist {
+        artist: String,
+        albums: Vec<Album>,
+    }
+    
+    #[derive(Deserialize)]
+    struct Album {
+        album: String,
+        tracks: Vec<Track>,
+    }
+    
+    #[derive(Deserialize)]
+    struct Track {
+        title: String,
+        id: i64
+    }
+
+    // TODO user handling
+    let music_db = fetch_users_music_db(state.music_dbs, "powpingdone").await;
+    music_db.transaction::<_, _, ReamioWebError>(|txn| {
+        Box::pin(async move {
+            let ret: Vec<Artist> = Vec::new();
+            let artists = sqlx::query("SELECT id, name FROM artist;")
+                .fetch(&mut **txn)
+                .map_ok(|ret| -> (i64, String) {
+                    (ret.get("id"), ret.get("name"))
+                });
+            
+            for (artist_id, artist_name) in artists.try_next().await? {
+                todo!()
+            }
+            Ok(Json(ret))
+        })
+    })
+}
+
 #[tokio::main]
 async fn main() {
-    let user_db =
-        SqlitePoolOptions::new()
-            .connect_with(SqliteConnectOptions::new().filename("./devdir/user.db").create_if_missing(true))
-            .await
-            .unwrap();
-    sqlx::migrate!("src/migrations/userdb").run(&user_db).await.unwrap();
+    let user_db = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename("./devdir/user.db")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::migrate!("src/migrations/userdb")
+        .run(&user_db)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT OR IGNORE INTO users (username_lower, username_orig, phc) VALUES ('powpingdone', 'powpingdone', '');",
     )
@@ -297,22 +332,33 @@ async fn main() {
         .unwrap();
 
     // testing db
-    let ppd_db =
-        SqlitePoolOptions::new()
-            .connect_with(
-                SqliteConnectOptions::new().filename("./devdir/u/powpingdone/music.db").create_if_missing(true),
-            )
-            .await
-            .unwrap();
-    sqlx::migrate!("src/migrations/per_user").run(&ppd_db).await.unwrap();
+    let ppd_db = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename("./devdir/u/powpingdone/music.db")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::migrate!("src/migrations/per_user")
+        .run(&ppd_db)
+        .await
+        .unwrap();
 
     // setup state props
-    let music_dbs = Arc::new(RwLock::new(HashMap::from([("powpingdone".to_owned(), ppd_db)])));
+    let music_dbs = Arc::new(RwLock::new(HashMap::from([(
+        "powpingdone".to_owned(),
+        ppd_db,
+    )])));
     let w_music_dbs = Arc::downgrade(&music_dbs);
 
     // fire tasks
     let (tx_mdata, rx_mdata) = watch::channel(PopulateMetadata);
-    let mdata_bg_task = tokio::spawn(task_populate_mdata(rx_mdata, user_db.clone(), w_music_dbs.clone()));
+    let mdata_bg_task = tokio::spawn(task_populate_mdata(
+        rx_mdata,
+        user_db.clone(),
+        w_music_dbs.clone(),
+    ));
 
     // run server
     let state = ReamioApp {
@@ -320,10 +366,21 @@ async fn main() {
         music_dbs: w_music_dbs,
         populate_mdata_waker: tx_mdata,
     };
-    let router = Router::new().route("/", get(upload_csl )).merge(Router::new().route("/upload", post(upload_track))
-        // TODO: dynamically enable large uploads via an in-server toggle
-        .layer(DefaultBodyLimit::disable())).with_state(state);
-    axum::serve(tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(), router).await.unwrap();
+    let router = Router::new()
+        .route("/", get(get_artist_album_track))
+        .merge(
+            Router::new()
+                .route("/upload", post(upload_track))
+                // TODO: dynamically enable large uploads via an in-server toggle
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .with_state(state);
+    axum::serve(
+        tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(),
+        router,
+    )
+    .await
+    .unwrap();
 
     // cleanup, and drop everything
     drop(music_dbs);

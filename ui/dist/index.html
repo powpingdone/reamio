@@ -1,10 +1,16 @@
 <!DOCTYPE html>
 <html>
-    <head><link rel="modulepreload" href="/reamioui-d532d439d2228368.js" crossorigin="anonymous" integrity="sha384-1NLhjSIDUZnshGGJ/xDRZ5M/Jr6tmveIgCz9UU827HPF1kDe9cUo1iN6lJY9tThf"><link rel="preload" href="/reamioui-d532d439d2228368_bg.wasm" crossorigin="anonymous" integrity="sha384-F/vIHzZM4iEhr8zJMAggM3SPIX+Z0URL66oYhm4D6JySEmFKPDi/MPcN/0MqqAJk" as="fetch" type="application/wasm"></head>
+    <head>
+	<style>
+	 .red {
+	     color: red;
+	 }
+	</style>
+    <link rel="modulepreload" href="/reamioui-1a02de9bb7689c25.js" crossorigin="anonymous" integrity="sha384-U8qLxACXatcBbLxyPyEIyuFSGUkL8yFDpgl+eW4YiERH+GmgpxdOUvCiowCpsLrE"><link rel="preload" href="/reamioui-1a02de9bb7689c25_bg.wasm" crossorigin="anonymous" integrity="sha384-w9LhIcGnxm7ylwkMGwRaZYqUMNpj6uY35xlsdeF5IkOngrim7X/gOl3HHSReHoWt" as="fetch" type="application/wasm"></head>
     <body>
 <script type="module">
-import init, * as bindings from '/reamioui-d532d439d2228368.js';
-const wasm = await init({ module_or_path: '/reamioui-d532d439d2228368_bg.wasm' });
+import init, * as bindings from '/reamioui-1a02de9bb7689c25.js';
+const wasm = await init({ module_or_path: '/reamioui-1a02de9bb7689c25_bg.wasm' });
 
 
 window.wasmBindings = bindings;

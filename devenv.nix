@@ -2,7 +2,7 @@
 
 {
   # https://devenv.sh/packages/
-  packages = [ pkgs.git pkgs.gdb pkgs.sqlx-cli pkgs.sql-formatter ];
+  packages = [ pkgs.trunk pkgs.git pkgs.gdb pkgs.sqlx-cli pkgs.sql-formatter ];
 
   # https://devenv.sh/languages/
   languages.rust = {
