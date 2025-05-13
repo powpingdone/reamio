@@ -1,8 +1,11 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, State}, response::{IntoResponse, Redirect}, routing::{get, post}, Json, Router
+    Json, Router,
+    extract::{DefaultBodyLimit, Multipart, State},
+    response::{IntoResponse, Redirect},
+    routing::{get, post},
 };
-use futures::{StreamExt, TryStreamExt};
-use serde::Deserialize;
+use futures::StreamExt;
+use serde::Serialize;
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -272,42 +275,39 @@ async fn upload_track(State(state): State<ReamioApp>, mut mp: Multipart) -> impl
 }
 
 async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResponse {
-    
-    #[derive(Deserialize)]
-    struct Artist {
-        artist: String,
-        albums: Vec<Album>,
-    }
-    
-    #[derive(Deserialize)]
-    struct Album {
-        album: String,
-        tracks: Vec<Track>,
-    }
-    
-    #[derive(Deserialize)]
-    struct Track {
-        title: String,
-        id: i64
+    #[derive(Serialize, sqlx::FromRow, Debug)]
+    struct RetRow {
+        album_name: String,
+        artist_name: String,
+        track_title: String,
+
+        album_id: i64,
+        artist_id: i64,
+        track_id: i64,
     }
 
     // TODO user handling
-    let music_db = fetch_users_music_db(state.music_dbs, "powpingdone").await;
-    music_db.transaction::<_, _, ReamioWebError>(|txn| {
-        Box::pin(async move {
-            let ret: Vec<Artist> = Vec::new();
-            let artists = sqlx::query("SELECT id, name FROM artist;")
-                .fetch(&mut **txn)
-                .map_ok(|ret| -> (i64, String) {
-                    (ret.get("id"), ret.get("name"))
-                });
-            
-            for (artist_id, artist_name) in artists.try_next().await? {
-                todo!()
-            }
-            Ok(Json(ret))
-        })
-    })
+    let mut db = fetch_users_music_db(state.music_dbs, "powpingdone").await;
+    Ok::<_, error::ReamioWebError>(Json(
+        sqlx::query_as::<_, RetRow>(
+            r#"
+            SELECT
+                album.id AS album_id,
+                album.name AS album_name,
+                artist.id AS artist_id,
+                artist.name AS artist_name,
+                track.id AS track_id,
+                track.title AS track_title
+            FROM album
+            JOIN album_tracks ON album.id = album_tracks.album
+            JOIN track ON album_tracks.track = track.id
+            JOIN artist_tracks ON track.id = artist_tracks.track
+            JOIN artist ON artist_tracks.artist = artist.id
+            GROUP BY artist.id, album.id, track.id;"#,
+        )
+        .fetch_all(&mut *db)
+        .await?,
+    ))
 }
 
 #[tokio::main]
