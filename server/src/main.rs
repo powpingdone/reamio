@@ -1,8 +1,9 @@
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, State},
+    http::Uri,
     response::{IntoResponse, Redirect},
-    routing::{get, post},
+    routing::{get, get_service, post},
 };
 use futures::StreamExt;
 use serde::Serialize;
@@ -19,6 +20,7 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, watch},
 };
+use tower_http::services::{ServeDir, ServeFile};
 
 mod error;
 
@@ -367,12 +369,24 @@ async fn main() {
         populate_mdata_waker: tx_mdata,
     };
     let router = Router::new()
-        .route("/", get(get_artist_album_track))
-        .merge(
+        // api stuffs
+        .nest(
+            "/api",
             Router::new()
-                .route("/upload", post(upload_track))
-                // TODO: dynamically enable large uploads via an in-server toggle
-                .layer(DefaultBodyLimit::disable()),
+                .route("/tabledump", get(get_artist_album_track))
+                .merge(
+                    Router::new()
+                        .route("/upload", post(upload_track))
+                        // TODO: dynamically enable large uploads via an in-server toggle
+                        .layer(DefaultBodyLimit::disable()),
+                ),
+        )
+        // load page
+        //
+        // TODO: this should probably be better?
+        .fallback_service(
+            ServeDir::new("./devdir/dist")
+                .not_found_service(ServeFile::new("./devdir/dist/index.html")),
         )
         .with_state(state);
     axum::serve(
