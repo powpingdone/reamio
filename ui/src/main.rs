@@ -1,19 +1,8 @@
-use leptos::prelude::*;
+slint::include_modules!();
 
 fn main() {
-    leptos::mount::mount_to_body(App);
+    let main_window = MainWindow::new().unwrap();
+
+    main_window.run().unwrap();
 }
 
-#[component]
-fn App() -> impl IntoView {
-    let (count, set_count) = signal(0);
-
-    view! {
-        <button 
-        on:click=move |_| set_count.update(|x| {*x += 1})
-        class:red=move || count.get() % 2 == 1 >
-            "Click me:"
-            {count}
-        </button>
-    }
-}

@@ -1,14 +1,30 @@
-{ pkgs, lib, config, inputs, ... }:
-
 {
+  pkgs,
+  lib,
+  config,
+  inputs,
+  ...
+}: {
   # https://devenv.sh/packages/
-  packages = [ pkgs.trunk pkgs.git pkgs.gdb pkgs.sqlx-cli pkgs.sql-formatter ];
+  packages = with pkgs;[
+    git
+    gdb
+    
+    # ui
+    slint-lsp
+    qt6.qtbase
+    qt6.qtsvg
+    libGL
+
+    # sql(x) stuffs
+    sqlx-cli
+    sql-formatter
+  ];
 
   # https://devenv.sh/languages/
   languages.rust = {
     enable = true;
     channel = "stable";
-    targets = ["wasm32-unknown-unknown"];
   };
 
   # See full reference at https://devenv.sh/reference/options/

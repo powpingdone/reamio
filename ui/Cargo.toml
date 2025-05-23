@@ -4,5 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-console_error_panic_hook = "0.1"
-leptos = { version = "0.8", features = ["csr"] }
+slint = "1.11"
+
+[build-dependencies]
+slint-build = "1.11"
