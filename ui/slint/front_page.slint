@@ -1,3 +1,31 @@
+export struct ArtistRel {
+    // actual artist id
+    realid: int,
+    title: string,
+    assoc_album_id: [int],
+}
+
+export struct AlbumRel {
+    realid: int,
+    title: string,
+    assoc_track_id: [int],
+}
+
+export struct TrackRel {
+    realid: int,
+    title: string,
+}
+
+export global TrackList {
+    // NOTE: these *must* be sorted such that artists -> albums -> tracks
+    // this is done in a simple manner: the hierarchy maps the assoc_*_id list to positions in each
+    // this *does* mean that if these are updated, everything has to be recomputed
+    // I really wish there was a native "map" type but that's fine I guess
+    in property <[ArtistRel]> artists;
+    in property <[AlbumRel]> albums;
+    in property <[TrackRel]> tracks;
+}
+
 export component MainWindow inherits Window {
     Text {
         text: "hello world";
