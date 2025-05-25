@@ -4537,6 +4537,7 @@ dependencies = [
 name = "reamioui"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "slint",
  "slint-build",
  "ureq",
