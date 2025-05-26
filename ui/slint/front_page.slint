@@ -1,3 +1,5 @@
+import { ListView, VerticalBox } from "std-widgets.slint";
+
 export struct TrackRel {
     id: int,
     title: string,
@@ -20,8 +22,33 @@ export global TrackList {
 }
 
 export component MainWindow inherits Window {
-    Text {
-        text: "hello world";
-        color: green;
+    ListView {
+        for artist[index] in TrackList.artists: VerticalBox {
+	    Rectangle {
+            background: Colors.red;
+	    Text {
+                text: artist.title;
+            }
+	    }
+            
+            for album[index] in artist.assoc_album: VerticalBox {
+                Rectangle {
+		background: Colors.blue;
+                    
+		Text {
+                    text: album.title;
+                }}
+	   	
+		for track[index] in album.assoc_track:  
+                VerticalBox {
+                    Rectangle{
+                    background: Colors.green;
+            	    Text {
+            	        text: track.title;
+            	    }
+		    }
+                }
+            }
+        }
     }
 }

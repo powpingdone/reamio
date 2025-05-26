@@ -19,6 +19,7 @@
     # sql(x) stuffs
     sqlx-cli
     sql-formatter
+    sqlite
   ];
 
   # https://devenv.sh/languages/
