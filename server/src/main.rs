@@ -1,15 +1,16 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, State},
-    http::Uri,
-    response::{IntoResponse, Redirect},
-    routing::{get, get_service, post},
+    body::Body,
+    extract::{DefaultBodyLimit, Query, State},
+    response::IntoResponse,
+    routing::{get, post},
 };
-use futures::StreamExt;
-use serde::Serialize;
+use bytes::Buf;
+use futures::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use sqlx::{
     SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use sqlx::{pool::PoolConnection, prelude::*};
 use std::{
@@ -20,7 +21,6 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, watch},
 };
-use tower_http::services::{ServeDir, ServeFile};
 
 mod error;
 
@@ -67,157 +67,167 @@ async fn task_populate_mdata(
                 .await
                 .is_ok_and(|x| x)
             {
-                // TODO maint: clean up uploaded_files that have mismatched files
+                // TODO: maint: clean up uploaded_files that have mismatched files
                 continue;
             };
 
             // spawn a task to add the track
+            //
+            // TODO: make this spawn as an async task
             let mut music_db = fetch_users_music_db(music_dbs.clone(), &user).await;
-            drop(tokio::spawn({
-                let user_db = user_db.clone();
-                async move {
-                    let ret = music_db.transaction::<_, (), ReamioProcessingErrorInternal>(|txn| {
-                        // TODO: actual tagging
-                        //
-                        // TODO: error handling
-                        Box::pin(async move {
-                            // insert track mdata
-                            //
-                            // NOTE: ordering is important because this isn't BEGIN IMMEDIATE
-                            // tldr: if you add a read sql statement before a write in this transaction, this whole thing must be updated
-                            let album = rand::random::<u64>().to_string();
-                            let album_id =
-                                sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
-                                    .bind(album)
-                                    .fetch_one(&mut **txn)
-                                    .await?
-                                    .get::<i64, _>("id");
-                            let artist = rand::random::<u64>().to_string();
-                            let artist_id =
-                                sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
-                                    .bind(artist)
-                                    .fetch_one(&mut **txn)
-                                    .await?
-                                    .get::<i64, _>("id");
-
-                            // insert dirs
-                            let mut path_split = path.split('/').collect::<Vec<_>>();
-                            let Some(fname) = path_split.pop() else {
-                                return Err(
-                                    ReamioPathError {
-                                        msg: "path contains nothing, not even a filename".to_owned(),
-                                    }.into(),
-                                )
-                            };
-                            if fname.trim().is_empty() {
-                                return Err(
-                                    ReamioPathError {
-                                        msg: format!("filename \"{fname}\" was trimmed into emptyness"),
-                                    }.into(),
-                                )
-                            }
-                            let fname = fname.trim();
-                            let path_split = path_split;
-                            let parent_dir = {
-                                let mut dir = None::<i64>;
-                                for frag in path_split {
-                                    if frag.trim().is_empty() {
-                                        return Err(
-                                            ReamioPathError {
-                                                msg: format!("folder \"{frag}\" was trimmed into emptyness"),
-                                            }.into(),
-                                        )
-                                    }
-                                    let frag = frag.trim();
-
-                                    // list current directory
-                                    let ls =
-                                        sqlx::query(
-                                            r#"
-                                            SELECT dir.node, dir.name 
-                                            FROM dir_tree JOIN dir ON dir.node = dir_tree.node
-                                            WHERE dir_tree.parent IS $1;
-                                            "#,
-                                        )
-                                            .bind(dir)
-                                            .fetch_all(&mut **txn)
-                                            .await?
-                                            .iter()
-                                            .map(|x| (x.get("name"), x.get("node")))
-                                            .collect::<HashMap<String, i64>>();
-                                    if let Some(pt) = ls.get(frag) {
-                                        // cd
-                                        dir = Some(*pt);
-                                    } else {
-                                        // mkdir
-                                        let pt =
-                                            sqlx::query("INSERT INTO dir (name) VALUES ($1) RETURNING node;")
-                                                .bind(frag)
-                                                .fetch_one(&mut **txn)
-                                                .await?
-                                                .get::<i64, _>("node");
-                                        sqlx::query("INSERT INTO dir_tree (node, parent) VALUES ($1, $2);")
-                                            .bind(pt)
-                                            .bind(dir)
-                                            .execute(&mut **txn)
-                                            .await?;
-
-                                        // cd
-                                        dir = Some(pt);
-                                    }
-                                }
-                                dir
-                            };
-
-                            // insert track
-                            let track_name = rand::random::<u64>().to_string();
-
-                            // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
-                            let track_id =
-                                sqlx::query("INSERT INTO track (title, dir, fname) VALUES ($1, $2, $3) RETURNING id;")
-                                    .bind(track_name)
-                                    .bind(parent_dir)
-                                    .bind(fname)
-                                    .fetch_one(&mut **txn)
-                                    .await?
-                                    .get::<i64, _>("id");
-
-                            // join
-                            sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
-                                .bind(track_id)
-                                .bind(artist_id)
-                                .execute(&mut **txn)
-                                .await?;
-                            sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
-                                .bind(track_id)
-                                .bind(album_id)
-                                .execute(&mut **txn)
-                                .await?;
-
-                            // finally, move file
-                            //
-                            // note that track_id and fid is secure because it's just a number
-                            tokio::fs::rename(format!("./devdir/temp/{fid}"), format!("./devdir/u/{user}/{track_id}")).await?;
-                            Ok(())
-                        })
-                    }).await;
+            let poss_txn = music_db.begin_with("IMMEDIATE").await;
+            match poss_txn {
+                Err(err) => {
+                    println!("while getting db transaction connection: {err:?}");
+                    return;
+                }
+                Ok(txn) => {
+                    let ret = task_populate_mdata_userdb_proccessing(txn, path, user, fid).await;
                     if let Err(err) = ret {
                         // TODO: report upload errors to the user
                         println!("while doing upload processing: {err:?}");
                     }
-
-                    // delete upload task after previous txn
-                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
-                        .bind(fid)
-                        .execute(&user_db)
-                        .await;
-                    if let Err(err) = ret {
-                        println!("when deleting from uploaded_files: {err:?}");
-                    }
                 }
-            }));
+            }
+
+            // delete upload task after previous txn
+            let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
+                .bind(fid)
+                .execute(&user_db)
+                .await;
+            if let Err(err) = ret {
+                println!("when deleting from uploaded_files: {err:?}");
+            }
         }
     }
+}
+
+// subtask function as part of the above function of the same prefix.
+// processes tags and inserts them into the music db, after moving the file to the u/ dir
+async fn task_populate_mdata_userdb_proccessing(
+    mut txn: sqlx::Transaction<'_, sqlx::Sqlite>,
+    path: String,
+    user: String,
+    fid: i64,
+) -> Result<(), ReamioProcessingErrorInternal> {
+    // TODO: actual tagging
+    //
+    // step 1: insert track mdata
+    let album = rand::random::<u64>().to_string();
+    let album_id = sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
+        .bind(album)
+        .fetch_one(&mut *txn)
+        .await?
+        .get::<i64, _>("id");
+    let artist = rand::random::<u64>().to_string();
+    let artist_id = sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
+        .bind(artist)
+        .fetch_one(&mut *txn)
+        .await?
+        .get::<i64, _>("id");
+
+    // step 2: process requested path
+    let mut path_split = path.split('/').collect::<Vec<_>>();
+    let Some(filename) = path_split.pop() else {
+        return Err(ReamioPathError {
+            msg: "path contains nothing, not even a filename".to_owned(),
+        }
+        .into());
+    };
+    if filename.trim().is_empty() {
+        return Err(ReamioPathError {
+            msg: format!("filename \"{filename}\" was trimmed into emptyness"),
+        }
+        .into());
+    }
+    let filename = filename.trim();
+
+    // step 3: navigate to dir in database
+    let parent_dir = {
+        let mut dir = None::<i64>;
+        for frag in path_split {
+            if frag.trim().is_empty() {
+                return Err(ReamioPathError {
+                    msg: format!("folder \"{frag}\" was trimmed into emptyness"),
+                }
+                .into());
+            }
+            let frag = frag.trim();
+
+            // list current directory
+            let ls = sqlx::query(
+                "SELECT dir.node, dir.name
+                     FROM dir_tree JOIN dir ON dir.node = dir_tree.node
+                     WHERE dir_tree.parent IS $1;",
+            )
+            .bind(dir)
+            .fetch_all(&mut *txn)
+            .await?
+            .iter()
+            .map(|x| (x.get("name"), x.get("node")))
+            .collect::<HashMap<String, i64>>();
+
+            // mkdir or cd to that dir
+            if let Some(pt) = ls.get(frag) {
+                // cd
+                dir = Some(*pt);
+            } else {
+                // mkdir
+                let pt = sqlx::query("INSERT INTO dir (name) VALUES ($1) RETURNING node;")
+                    .bind(frag)
+                    .fetch_one(&mut *txn)
+                    .await?
+                    .get::<i64, _>("node");
+                sqlx::query("INSERT INTO dir_tree (node, parent) VALUES ($1, $2);")
+                    .bind(pt)
+                    .bind(dir)
+                    .execute(&mut *txn)
+                    .await?;
+
+                // cd
+                dir = Some(pt);
+            }
+        }
+        dir
+    };
+
+    // TODO: tagging
+    //
+    // step 4: insert track with dir
+    let track_name = rand::random::<u64>().to_string();
+    // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
+    let track_id =
+        sqlx::query("INSERT INTO track (title, dir, fname) VALUES ($1, $2, $3) RETURNING id;")
+            .bind(track_name)
+            .bind(parent_dir)
+            .bind(filename)
+            .fetch_one(&mut *txn)
+            .await?
+            .get::<i64, _>("id");
+
+    // step 5: join track with album and artist
+    sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&mut *txn)
+        .await?;
+    sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
+        .bind(track_id)
+        .bind(album_id)
+        .execute(&mut *txn)
+        .await?;
+
+    // step 6: finally, move file
+    //
+    // note that track_id and fid is secure because it's just a number
+    tokio::fs::rename(
+        format!("./devdir/temp/{fid}"),
+        format!("./devdir/u/{user}/{track_id}"),
+    )
+    .await?;
+
+    txn.commit().await?;
+    Ok(())
 }
 
 async fn fetch_users_music_db(
@@ -231,49 +241,67 @@ async fn fetch_users_music_db(
     db_pool.acquire().await.unwrap()
 }
 
-async fn upload_track(State(state): State<ReamioApp>, mut mp: Multipart) -> impl IntoResponse {
-    // ingest paths
-    state.user_db.acquire().await.unwrap().transaction::<_, _, ReamioWebError>(|txn| {
-        Box::pin(async move {
-            while let Some(mut mp_field) = mp.next_field().await.unwrap() {
-                let Some(path) = mp_field.file_name() else {
-                    continue;
-                };
+#[derive(Deserialize)]
+struct UploadArgs {
+    pub path: String, // expected param: a set of strings seperated by '/'
+}
 
-                // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
-                let fid: i64 =
-                    sqlx::query(
-                        "INSERT INTO uploaded_files (orig_path, user, fid) VALUES ($1, $2, NULL) RETURNING fid;",
-                    )
-                        .bind(path)
-                        // TODO: dynamic users
-                        .bind("powpingdone")
-                        .fetch_one(&mut **txn)
-                        .await?
-                        .get("fid");
+#[derive(Serialize)]
+struct UploadReturn {
+    written: usize,
+}
 
-                // write out file
-                let mut file = tokio::fs::OpenOptions::new().create(true).write(true)
-                    // this is secure because fid is i64, and cannot represent anything other than
-                    // [0-9]
-                    .open(format!("./devdir/temp/{fid}")).await.unwrap();
-                while let Some(chunk) = mp_field.next().await {
-                    let chunk = chunk.unwrap();
-                    file.write_all(&chunk).await.unwrap();
-                }
-                file.sync_data().await.unwrap();
-                drop(file);
-            }
+/// Ingest track. This does not process any tracks, only writes them to disk
+/// and notifies the actual processor that there are tracks to process.
+async fn upload_track(
+    State(state): State<ReamioApp>,
+    Query(UploadArgs { path }): Query<UploadArgs>,
+    body: Body,
+) -> Result<Json<UploadReturn>, ReamioWebError> {
+    let mut txn = state.user_db.begin_with("IMMEDIATE").await?;
 
-            // wake the mdata
-            state.populate_mdata_waker.send(PopulateMetadata).unwrap();
-            Ok(())
-        })
-    }).await.unwrap();
+    // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
+    //
+    // now, why is it i64 and not something more generic, like a Uuid? long story short:
+    // Uuid is not natively supported by sqlite and I needed a quick id impl so
+    // TODO: change this to a uuid and possibly make this path safe
+    let fid: i64 = sqlx::query(
+        "INSERT INTO uploaded_files (orig_path, user, fid) VALUES ($1, $2, NULL) RETURNING fid;",
+    )
+    .bind(path)
+    // TODO: dynamic users
+    .bind("powpingdone")
+    .fetch_one(&mut *txn)
+    .await?
+    .get("fid");
 
+    // write out file
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        // this is secure because fid is i64 and cannot represent anything other than [0-9]*
+        .open(format!("./devdir/temp/{fid}"))
+        .await
+        .unwrap();
+    let mut body = body.into_data_stream();
+    let mut size_acc = 0;
+    while let Some(mut chunk) = body.try_next().await? {
+        while chunk.has_remaining() {
+            size_acc += file.write_buf(&mut chunk).await.unwrap();
+        }
+    }
+    file.sync_data().await.unwrap();
+    drop(file);
+
+    // op is good
+    txn.commit().await?;
+
+    // wake the mdata
+    //
     // TODO maintenace task: on transaction error, the files are left behind. clean
     // them up.
-    return Redirect::to("/");
+    state.populate_mdata_waker.send(PopulateMetadata).unwrap();
+    Ok(Json(UploadReturn { written: size_acc }))
 }
 
 async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResponse {
@@ -292,20 +320,19 @@ async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResp
     let mut db = fetch_users_music_db(state.music_dbs, "powpingdone").await;
     Ok::<_, error::ReamioWebError>(Json(
         sqlx::query_as::<_, RetRow>(
-            r#"
-            SELECT
-                album.id AS album_id,
-                album.name AS album_name,
-                artist.id AS artist_id,
-                artist.name AS artist_name,
-                track.id AS track_id,
-                track.title AS track_title
-            FROM album
-            JOIN album_tracks ON album.id = album_tracks.album
-            JOIN track ON album_tracks.track = track.id
-            JOIN artist_tracks ON track.id = artist_tracks.track
-            JOIN artist ON artist_tracks.artist = artist.id
-            GROUP BY artist.id, album.id, track.id;"#,
+            "SELECT
+               album.id AS album_id,
+               album.name AS album_name,
+               artist.id AS artist_id,
+               artist.name AS artist_name,
+               track.id AS track_id,
+               track.title AS track_title
+           FROM album
+           JOIN album_tracks ON album.id = album_tracks.album
+           JOIN track ON album_tracks.track = track.id
+           JOIN artist_tracks ON track.id = artist_tracks.track
+           JOIN artist ON artist_tracks.artist = artist.id
+           GROUP BY artist.id, album.id, track.id;",
         )
         .fetch_all(&mut *db)
         .await?,
@@ -318,7 +345,8 @@ async fn main() {
         .connect_with(
             SqliteConnectOptions::new()
                 .filename("./devdir/user.db")
-                .create_if_missing(true),
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal),
         )
         .await
         .unwrap();
@@ -338,7 +366,8 @@ async fn main() {
         .connect_with(
             SqliteConnectOptions::new()
                 .filename("./devdir/u/powpingdone/music.db")
-                .create_if_missing(true),
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal),
         )
         .await
         .unwrap();
@@ -380,13 +409,6 @@ async fn main() {
                         // TODO: dynamically enable large uploads via an in-server toggle
                         .layer(DefaultBodyLimit::disable()),
                 ),
-        )
-        // load page
-        //
-        // TODO: this should probably be better?
-        .fallback_service(
-            ServeDir::new("./devdir/dist")
-                .not_found_service(ServeFile::new("./devdir/dist/index.html")),
         )
         .with_state(state);
     axum::serve(
