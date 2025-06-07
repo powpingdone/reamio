@@ -127,13 +127,22 @@ async fn task_populate_mdata_userdb_proccessing(
         .get::<i64, _>("id");
 
     // step 2: process requested path
-    let mut path_split = path.split('/').collect::<Vec<_>>();
-    let Some(filename) = path_split.pop() else {
+    if !path.chars().next().is_some_and(|x| x == '/') {
+        return Err(ReamioPathError {
+            msg: "the path is not absolute".to_owned(),
+        }
+        .into());
+    }
+    // [[ptie]]
+    if path.trim().is_empty() {
         return Err(ReamioPathError {
             msg: "path contains nothing, not even a filename".to_owned(),
         }
         .into());
-    };
+    }
+    let mut path_split = path.split('/').collect::<Vec<_>>();
+    // this unwrap is fine because of [[ptie]]
+    let filename = path_split.pop().unwrap();
     if filename.trim().is_empty() {
         return Err(ReamioPathError {
             msg: format!("filename \"{filename}\" was trimmed into emptyness"),
@@ -241,9 +250,23 @@ async fn fetch_users_music_db(
     db_pool.acquire().await.unwrap()
 }
 
+/// [[UploadArgs]]
+/// Query arguments for a function
+///
+/// Fields:
+/// - pub path: String
+///     Path relative to the root of the user dir that the file will be uploaded to.
+///     The path represented follows the following semantics:
+///     
+///     + The path is valid utf-8 (ie: String::from_utf8).
+///     + Each item is seperated by a '/'.
+///     + The path starts with '/', indicating the root of the dir. 
+///     + There is no preceding items for the first '/'.
+///     + All items before the last item is a folder.
+///     + The last item is the file name.
 #[derive(Deserialize)]
 struct UploadArgs {
-    pub path: String, // expected param: a set of strings seperated by '/'
+    pub path: String,
 }
 
 #[derive(Serialize)]
@@ -253,17 +276,28 @@ struct UploadReturn {
 
 /// Ingest track. This does not process any tracks, only writes them to disk
 /// and notifies the actual processor that there are tracks to process.
+///
+/// Path: /api/upload?path={}
+///
+/// Arguments:
+/// - State(state): State<ReamioApp>
+///     Server state. [[ReamioApp]].
+/// - Query(UploadArgs { path }): Query<UploadArgs>
+///     Query args. See [[UploadArgs]] for a description of the query parameters for this function.
+/// - body: Body,
+///     Body of HTTP request. This is the item to be uploaded in it's entirety.
 async fn upload_track(
     State(state): State<ReamioApp>,
     Query(UploadArgs { path }): Query<UploadArgs>,
     body: Body,
 ) -> Result<Json<UploadReturn>, ReamioWebError> {
+    // begin transaction
     let mut txn = state.user_db.begin_with("IMMEDIATE").await?;
 
     // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
     //
     // now, why is it i64 and not something more generic, like a Uuid? long story short:
-    // Uuid is not natively supported by sqlite and I needed a quick id impl so
+    // Uuid is a external module in sqlite and I dont want to actually load a module right now
     // TODO: change this to a uuid and possibly make this path safe
     let fid: i64 = sqlx::query(
         "INSERT INTO uploaded_files (orig_path, user, fid) VALUES ($1, $2, NULL) RETURNING fid;",
@@ -293,7 +327,7 @@ async fn upload_track(
     file.sync_data().await.unwrap();
     drop(file);
 
-    // op is good
+    // operation is good
     txn.commit().await?;
 
     // wake the mdata
@@ -304,6 +338,7 @@ async fn upload_track(
     Ok(Json(UploadReturn { written: size_acc }))
 }
 
+/// Dump table for display.
 async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResponse {
     #[derive(Serialize, sqlx::FromRow, Debug)]
     struct RetRow {
@@ -383,7 +418,7 @@ async fn main() {
     )])));
     let w_music_dbs = Arc::downgrade(&music_dbs);
 
-    // fire tasks
+    // fire background tasks
     let (tx_mdata, rx_mdata) = watch::channel(PopulateMetadata);
     let mdata_bg_task = tokio::spawn(task_populate_mdata(
         rx_mdata,
@@ -398,7 +433,6 @@ async fn main() {
         populate_mdata_waker: tx_mdata,
     };
     let router = Router::new()
-        // api stuffs
         .nest(
             "/api",
             Router::new()

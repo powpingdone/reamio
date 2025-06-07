@@ -1,4 +1,4 @@
-import { ListView, VerticalBox } from "std-widgets.slint";
+import { ListView, VerticalBox, Button } from "std-widgets.slint";
 
 export struct TrackRel {
     id: int,
@@ -19,9 +19,16 @@ export struct ArtistRel {
 
 export global TrackList {
     in property <[ArtistRel]> artists;
+    callback populate_artists();
+    callback toggle_upload();
 }
 
 export component MainWindow inherits Window {
+    Button {
+        text: "Refresh";
+	clicked => { TrackList.populate_artists() }
+    } 
+
     ListView {
         for artist[index] in TrackList.artists: VerticalBox {
 	    Rectangle {
