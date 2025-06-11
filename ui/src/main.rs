@@ -202,15 +202,13 @@ fn file_upload() {
 
         // base paths used for subtracting root trees
         // see [[sgmtroottrees]] for what happens
-        let base_paths = files
-            .clone();
+        let base_paths = files.clone();
 
-        // flatten paths from `path_scan`
+        // do that path_scan function early
         let mut paths = Vec::new();
         for dir_at in files.into_iter() {
             paths.extend(path_scan(&dir_at).unwrap());
         }
-       
 
         // remove root dirs before the actual paths [[sgmtroottrees]]
         //
@@ -220,14 +218,38 @@ fn file_upload() {
         //     read_dir("a/") -> [ "a/b", "a/c" ]
         //     read_dir("/z/b") -> [ "/z/b/c", "/z/b/d" ]
         //     read_dir("C:\a") -> [ "C:\a\b", "C:\a\c"]
-        // 
+        //
         // This means that the paths from `files` (or `base_paths` in this case) are the head
         // of the dirs and must be stripped so that it can be inserted into the server without
         // friction:
         //
         //     [ "a/b/d", "a/c" ] -> [ "/b/d" "/c" ]
-        // 
+        //
         // That's what the following code "should" do.
+        let stripped_paths = paths
+            .into_iter()
+            .map(|x| {
+                for i in &base_paths {
+                    if let Ok(stripped) = x.strip_prefix(i) {
+                        return Ok((x.clone(), stripped.to_owned()));
+                    }
+                }
+                Err(format!(
+                    "{} does not have a prefix in {:?}",
+                    x.display(),
+                    base_paths.iter().map(|x| x.display()).collect::<Vec<_>>()
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        for (realpath, disp) in stripped_paths.into_iter() {
+            let disp = disp.to_str().map(str::to_owned).unwrap();
+            ureq::post("http://localhost:8080/api/upload")
+                .query("path", disp)
+                .send(std::fs::read(realpath).unwrap())
+                .unwrap();
+        }
     });
 }
 
