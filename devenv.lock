@@ -3,10 +3,10 @@
     "devenv": {
       "locked": {
         "dir": "src/modules",
-        "lastModified": 1748688634,
+        "lastModified": 1749632886,
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "df38744269cc4ea8cee9e36fe882e9ef786df11b",
+        "rev": "0d39abfbac9ac9f421f2c43453af4ebc13227521",
         "type": "github"
       },
       "original": {
@@ -24,10 +24,10 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1748673500,
+        "lastModified": 1749623906,
         "owner": "nix-community",
         "repo": "fenix",
-        "rev": "4064670e8aeab5353001612efd17b19c7af7fde4",
+        "rev": "873cccc628f5e39407e319e6711f3b7d6d1f15cc",
         "type": "github"
       },
       "original": {
@@ -60,10 +60,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1747372754,
+        "lastModified": 1749636823,
         "owner": "cachix",
         "repo": "git-hooks.nix",
-        "rev": "80479b6ec16fefd9c1db3ea13aeb038c60530f46",
+        "rev": "623c56286de5a3193aa38891a6991b28f9bab056",
         "type": "github"
       },
       "original": {
@@ -94,10 +94,10 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1748460289,
+        "lastModified": 1749285348,
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "96ec055edbe5ee227f28cdbc3f1ddf1df5965102",
+        "rev": "3e3afe5174c561dee0df6f2c2b2236990146329f",
         "type": "github"
       },
       "original": {
@@ -121,10 +121,10 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1748636115,
+        "lastModified": 1749558764,
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "987cd076e211a02542d5d82264474bb3325e8e7e",
+        "rev": "9c3476d225ccc90c081280c2a20e9f7d8a200325",
         "type": "github"
       },
       "original": {
