@@ -58,7 +58,9 @@ pub enum ReamioProcessingErrorInternal {
     SQLError(sqlx::Error),
     IOError(std::io::Error),
     PathError(ReamioPathError),
+    ID3Error(id3::Error),
 }
+
 
 impl From<sqlx::Error> for ReamioProcessingErrorInternal {
     fn from(value: sqlx::Error) -> Self {
@@ -75,6 +77,12 @@ impl From<std::io::Error> for ReamioProcessingErrorInternal {
 impl From<ReamioPathError> for ReamioProcessingErrorInternal {
     fn from(value: ReamioPathError) -> Self {
         Self::PathError(value)
+    }
+}
+
+impl From<id3::Error> for ReamioProcessingErrorInternal {
+    fn from(value: id3::Error) -> Self {
+        Self::ID3Error(value)
     }
 }
 

@@ -1,3 +1,5 @@
+use id3::TagLike;
+
 use crate::prelude::*;
 use std::{collections::HashMap, convert::AsRef, path::Path};
 
@@ -71,8 +73,8 @@ async fn task_populate_mdata_userdb_proccessing(
     user: String,
     fid: i64,
 ) -> Result<(), ReamioProcessingErrorInternal> {
-    // TODO: actual tagging
-    //
+    let tags = extract_tags(fid)?;
+
     // step 1: insert track mdata
     let album = rand::random::<u64>().to_string();
     let album_id = sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
@@ -200,16 +202,11 @@ async fn task_populate_mdata_userdb_proccessing(
     Ok(())
 }
 
-trait TagReader {
-    fn is_candidate(&self, _: &Path) -> Result<bool, ReamioProcessingErrorInternal>;
-    fn tags_parse(&self, _: &Path) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal>;
-}
-
 fn extract_tags(fid: i64) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal> {
     let path = format!("./devdir/temp/{fid}");
     let path = Path::new(&path);
-    
-    let readers : Vec<Box<dyn TagReader>> = vec![];
+
+    let readers: Vec<Box<dyn TagReader>> = vec![Box::new(ID3TagReader)];
     for reader in readers {
         if reader.is_candidate(path)? {
             return Ok(reader.tags_parse(path)?);
@@ -217,4 +214,42 @@ fn extract_tags(fid: i64) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingEr
     }
 
     return Ok(HashMap::new());
+}
+
+trait TagReader {
+    fn is_candidate(&self, path: &Path) -> Result<bool, ReamioProcessingErrorInternal>;
+
+    fn tags_parse(
+        &self,
+        path: &Path,
+    ) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal>;
+}
+
+
+/// ID3TagReader reads the tags from "MPEG" files (along with mp3, wav, aiff).
+struct ID3TagReader;
+
+impl TagReader for ID3TagReader {
+    fn is_candidate(&self, path: &Path) -> Result<bool, ReamioProcessingErrorInternal> {
+        let file = std::fs::File::open(path)?;
+        id3::Tag::is_candidate(file).map_err(ReamioProcessingErrorInternal::from)
+    }
+
+    fn tags_parse(
+        &self,
+        path: &Path,
+    ) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal> {
+        let tag = id3::Tag::read_from_path(path)?;
+        let mut hmap = HashMap::new();
+        if let Some(x) = tag.title() {
+            hmap.insert("title".to_owned(), x.bytes().collect());
+        }
+        if let Some(x) = tag.artist() {
+            hmap.insert("artist".to_owned(), x.bytes().collect());
+        }
+        if let Some(x) = tag.album() {
+            hmap.insert("album".to_owned(), x.bytes().collect());
+        }
+        Ok(hmap)
+    }
 }
