@@ -53,24 +53,26 @@ impl IntoResponse for ReamioWebError {
 /// processing side. This is specifically for _not_ user facing web points, but
 /// more so for exposing raw errors in the console and (eventually) to the user as
 /// well.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ReamioProcessingErrorInternal {
-    SQLError(sqlx::Error),
-    IOError(std::io::Error),
+    SQL(sqlx::Error),
+    IO(std::io::Error),
     PathError(ReamioPathError),
-    ID3Error(id3::Error),
+    ID3(id3::Error),
+    MetaFlac(metaflac::Error),
 }
 
 
 impl From<sqlx::Error> for ReamioProcessingErrorInternal {
     fn from(value: sqlx::Error) -> Self {
-        Self::SQLError(value)
+        Self::SQL(value)
     }
 }
 
 impl From<std::io::Error> for ReamioProcessingErrorInternal {
     fn from(value: std::io::Error) -> Self {
-        Self::IOError(value)
+        Self::IO(value)
     }
 }
 
@@ -82,7 +84,13 @@ impl From<ReamioPathError> for ReamioProcessingErrorInternal {
 
 impl From<id3::Error> for ReamioProcessingErrorInternal {
     fn from(value: id3::Error) -> Self {
-        Self::ID3Error(value)
+        Self::ID3(value)
+    }
+}
+
+impl From<metaflac::Error> for ReamioProcessingErrorInternal {
+    fn from(value: metaflac::Error) -> Self {
+        Self::MetaFlac(value)
     }
 }
 

@@ -9,7 +9,6 @@ bytes = { version = "1.10", features = ["serde"] }
 futures = "0.3"
 id3 = "1.16"
 metaflac = "0.2"
-opusmeta = "2.0"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }

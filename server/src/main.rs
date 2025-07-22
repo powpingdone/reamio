@@ -56,6 +56,7 @@ pub async fn fetch_users_music_db(
 ///     + The last item is the file name.
 #[derive(Deserialize)]
 struct UploadArgs {
+    // TODO: Newtype this into something like "ReamioPath" with checks
     pub path: String,
 }
 

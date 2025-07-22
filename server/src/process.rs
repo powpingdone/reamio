@@ -73,23 +73,34 @@ async fn task_populate_mdata_userdb_proccessing(
     user: String,
     fid: i64,
 ) -> Result<(), ReamioProcessingErrorInternal> {
-    let tags = extract_tags(fid)?;
+    // step 1: get tags
+    let mut tags = extract_tags(fid)?;
 
-    // step 1: insert track mdata
-    let album = rand::random::<u64>().to_string();
-    let album_id = sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
-        .bind(album)
-        .fetch_one(&mut *txn)
-        .await?
-        .get::<i64, _>("id");
-    let artist = rand::random::<u64>().to_string();
-    let artist_id = sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
-        .bind(artist)
-        .fetch_one(&mut *txn)
-        .await?
-        .get::<i64, _>("id");
+    // step 2: insert track mdata
+    //
+    // TODO: support multiple Album/Artist bindings
+    let album_id = match tags.remove("album") {
+        Some(album) => Some(
+            sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
+                .bind(String::from_utf8(album).unwrap())
+                .fetch_one(&mut *txn)
+                .await?
+                .get::<i64, _>("id"),
+        ),
+        None => None,
+    };
+    let artist_id = match tags.remove("artist") {
+        Some(artist) => Some(
+            sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
+                .bind(String::from_utf8(artist).unwrap())
+                .fetch_one(&mut *txn)
+                .await?
+                .get::<i64, _>("id"),
+        ),
+        None => None,
+    };
 
-    // step 2: process requested path
+    // step 3: process requested path
     if !path.chars().next().is_some_and(|x| x == '/') {
         return Err(ReamioPathError {
             msg: "the path is not absolute".to_owned(),
@@ -114,7 +125,7 @@ async fn task_populate_mdata_userdb_proccessing(
     }
     let filename = filename.trim();
 
-    // step 3: navigate to dir in database
+    // step 4: navigate to dir in database
     let parent_dir = {
         let mut dir = None::<i64>;
         for frag in path_split {
@@ -165,8 +176,11 @@ async fn task_populate_mdata_userdb_proccessing(
 
     // TODO: tagging
     //
-    // step 4: insert track with dir
-    let track_name = rand::random::<u64>().to_string();
+    // step 5: insert track with dir
+    let track_name = match tags.remove("track") {
+        Some(x) => String::from_utf8(x).unwrap(),
+        None => filename.to_owned(),
+    };
     // CHANGING THIS RETURN TYPE HAS CONSEQUENCES
     let track_id =
         sqlx::query("INSERT INTO track (title, dir, fname) VALUES ($1, $2, $3) RETURNING id;")
@@ -177,19 +191,23 @@ async fn task_populate_mdata_userdb_proccessing(
             .await?
             .get::<i64, _>("id");
 
-    // step 5: join track with album and artist
-    sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
-        .bind(track_id)
-        .bind(artist_id)
-        .execute(&mut *txn)
-        .await?;
-    sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
-        .bind(track_id)
-        .bind(album_id)
-        .execute(&mut *txn)
-        .await?;
+    // step 6: join track with album and artist
+    if artist_id.is_some() {
+        sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
+            .bind(track_id)
+            .bind(artist_id)
+            .execute(&mut *txn)
+            .await?;
+    }
+    if album_id.is_some() {
+        sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
+            .bind(track_id)
+            .bind(album_id)
+            .execute(&mut *txn)
+            .await?;
+    }
 
-    // step 6: finally, move file
+    // step 7: finally, move file
     //
     // note that track_id and fid is secure because it's just a number
     tokio::fs::rename(
@@ -206,10 +224,18 @@ fn extract_tags(fid: i64) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingEr
     let path = format!("./devdir/temp/{fid}");
     let path = Path::new(&path);
 
-    let readers: Vec<Box<dyn TagReader>> = vec![Box::new(ID3TagReader)];
+    let readers: Vec<Box<dyn TagReader>> =
+        vec![Box::new(ID3TagReader), Box::new(MetaFlacTagReader)];
     for reader in readers {
-        if reader.is_candidate(path)? {
-            return Ok(reader.tags_parse(path)?);
+        match reader.is_candidate(path)? {
+            Some(x) if x => return Ok(reader.tags_parse(path)?),
+            Some(_) => continue,
+            None => {
+                // unsupported is_candidate
+                if let Ok(map) = reader.tags_parse(path) {
+                    return Ok(map);
+                }
+            }
         }
     }
 
@@ -217,7 +243,7 @@ fn extract_tags(fid: i64) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingEr
 }
 
 trait TagReader {
-    fn is_candidate(&self, path: &Path) -> Result<bool, ReamioProcessingErrorInternal>;
+    fn is_candidate(&self, path: &Path) -> Result<Option<bool>, ReamioProcessingErrorInternal>;
 
     fn tags_parse(
         &self,
@@ -225,14 +251,15 @@ trait TagReader {
     ) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal>;
 }
 
-
 /// ID3TagReader reads the tags from "MPEG" files (along with mp3, wav, aiff).
 struct ID3TagReader;
 
 impl TagReader for ID3TagReader {
-    fn is_candidate(&self, path: &Path) -> Result<bool, ReamioProcessingErrorInternal> {
+    fn is_candidate(&self, path: &Path) -> Result<Option<bool>, ReamioProcessingErrorInternal> {
         let file = std::fs::File::open(path)?;
-        id3::Tag::is_candidate(file).map_err(ReamioProcessingErrorInternal::from)
+        id3::Tag::is_candidate(file)
+            .map(|x| Some(x))
+            .map_err(ReamioProcessingErrorInternal::from)
     }
 
     fn tags_parse(
@@ -241,6 +268,7 @@ impl TagReader for ID3TagReader {
     ) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal> {
         let tag = id3::Tag::read_from_path(path)?;
         let mut hmap = HashMap::new();
+
         if let Some(x) = tag.title() {
             hmap.insert("title".to_owned(), x.bytes().collect());
         }
@@ -249,6 +277,47 @@ impl TagReader for ID3TagReader {
         }
         if let Some(x) = tag.album() {
             hmap.insert("album".to_owned(), x.bytes().collect());
+        }
+        Ok(hmap)
+    }
+}
+
+/// MetaFlacTagReader reads tags from vorbis containers (ogg, flac)
+struct MetaFlacTagReader;
+
+impl TagReader for MetaFlacTagReader {
+    fn is_candidate(&self, path: &Path) -> Result<Option<bool>, ReamioProcessingErrorInternal> {
+        let mut file = std::fs::File::open(path)?;
+        Ok(Some(metaflac::Tag::is_candidate(&mut file)))
+    }
+
+    fn tags_parse(
+        &self,
+        path: &Path,
+    ) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal> {
+        let tag = metaflac::Tag::read_from_path(path)?;
+        let mut hmap = HashMap::new();
+        for block in tag.get_blocks(metaflac::BlockType::VorbisComment) {
+            let metaflac::Block::VorbisComment(vc) = block else {
+                // wtf happened here
+                continue;
+            };
+
+            if let Some(x) = vc.title()
+                && let Some(x) = x.get(0)
+            {
+                hmap.insert("title".to_owned(), x.bytes().collect());
+            }
+            if let Some(x) = vc.artist()
+                && let Some(x) = x.get(0)
+            {
+                hmap.insert("artist".to_owned(), x.bytes().collect());
+            }
+            if let Some(x) = vc.album()
+                && let Some(x) = x.get(0)
+            {
+                hmap.insert("album".to_owned(), x.bytes().collect());
+            }
         }
         Ok(hmap)
     }
