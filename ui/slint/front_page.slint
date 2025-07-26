@@ -24,36 +24,45 @@ export global TrackList {
 }
 
 export component MainWindow inherits Window {
-    Button {
-        text: "Refresh";
-	clicked => { TrackList.populate_artists() }
-    } 
+    VerticalLayout {
+        HorizontalLayout {
+            Button {
+                text: "Refresh";
+                clicked => { TrackList.populate_artists() }
+            } 
 
-    ListView {
-        for artist[index] in TrackList.artists: VerticalBox {
-	    Rectangle {
-            background: Colors.red;
-	    Text {
-                text: artist.title;
+            Button {
+                text: "Upload";
+                clicked => { TrackList.toggle_upload() }
             }
-	    }
-            
-            for album[index] in artist.assoc_album: VerticalBox {
-                Rectangle {
-		background: Colors.blue;
-                    
-		Text {
-                    text: album.title;
-                }}
-	   	
-		for track[index] in album.assoc_track:  
-                VerticalBox {
-                    Rectangle{
-                    background: Colors.green;
-            	    Text {
-            	        text: track.title;
-            	    }
-		    }
+        }
+
+        ListView {
+            for artist[index] in TrackList.artists: VerticalBox {
+        	    Rectangle {
+                background: Colors.red;
+        	    Text {
+                    text: artist.title;
+                }
+        	    }
+                
+                for album[index] in artist.assoc_album: VerticalBox {
+                    Rectangle {
+        		background: Colors.blue;
+                        
+        		Text {
+                        text: album.title;
+                    }}
+        	   	
+        		for track[index] in album.assoc_track:  
+                    VerticalBox {
+                        Rectangle{
+                        background: Colors.green;
+                	    Text {
+                	        text: track.title;
+                	    }
+        		    }
+                    }
                 }
             }
         }
