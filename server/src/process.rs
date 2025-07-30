@@ -1,9 +1,10 @@
 use id3::TagLike;
 
 use crate::prelude::*;
-use std::{collections::HashMap, convert::AsRef, path::Path};
+use std::{collections::HashMap, path::Path};
 
 // wake on new tracks
+#[tracing::instrument(skip(wake))]
 pub async fn task_populate_mdata(
     mut wake: WakeRx<PopulateMetadata>,
     user_db: SqlitePool,
@@ -67,6 +68,7 @@ pub async fn task_populate_mdata(
 
 // subtask function as part of the above function of the same prefix.
 // processes tags and inserts them into the music db, after moving the file to the u/ dir
+#[tracing::instrument]
 async fn task_populate_mdata_userdb_proccessing(
     mut txn: sqlx::Transaction<'_, sqlx::Sqlite>,
     path: String,
@@ -220,6 +222,7 @@ async fn task_populate_mdata_userdb_proccessing(
     Ok(())
 }
 
+#[tracing::instrument]
 fn extract_tags(fid: i64) -> Result<HashMap<String, Vec<u8>>, ReamioProcessingErrorInternal> {
     let path = format!("./devdir/temp/{fid}");
     let path = Path::new(&path);
@@ -252,9 +255,11 @@ trait TagReader {
 }
 
 /// ID3TagReader reads the tags from "MPEG" files (along with mp3, wav, aiff).
+#[derive(Debug)]
 struct ID3TagReader;
 
 impl TagReader for ID3TagReader {
+    #[tracing::instrument]
     fn is_candidate(&self, path: &Path) -> Result<Option<bool>, ReamioProcessingErrorInternal> {
         let file = std::fs::File::open(path)?;
         id3::Tag::is_candidate(file)
@@ -262,6 +267,7 @@ impl TagReader for ID3TagReader {
             .map_err(ReamioProcessingErrorInternal::from)
     }
 
+    #[tracing::instrument]
     fn tags_parse(
         &self,
         path: &Path,
@@ -283,14 +289,17 @@ impl TagReader for ID3TagReader {
 }
 
 /// MetaFlacTagReader reads tags from vorbis containers (ogg, flac)
+#[derive(Debug)]
 struct MetaFlacTagReader;
 
 impl TagReader for MetaFlacTagReader {
+    #[tracing::instrument]
     fn is_candidate(&self, path: &Path) -> Result<Option<bool>, ReamioProcessingErrorInternal> {
         let mut file = std::fs::File::open(path)?;
         Ok(Some(metaflac::Tag::is_candidate(&mut file)))
     }
 
+    #[tracing::instrument]
     fn tags_parse(
         &self,
         path: &Path,

@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+log = { version = "0.4.27", features = ["std"] }
 rfd = "0.15" 
 serde = { version = "1.0", features = ["derive"] }
 slint = "1.11"

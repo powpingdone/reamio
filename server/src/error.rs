@@ -63,7 +63,6 @@ pub enum ReamioProcessingErrorInternal {
     MetaFlac(metaflac::Error),
 }
 
-
 impl From<sqlx::Error> for ReamioProcessingErrorInternal {
     fn from(value: sqlx::Error) -> Self {
         Self::SQL(value)

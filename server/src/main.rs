@@ -10,11 +10,13 @@ use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use tracing::{event, Level};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, watch},
 };
+use tracing_subscriber::prelude::*;
 
 mod error;
 mod prelude;
@@ -29,10 +31,23 @@ pub struct ReamioApp {
     pub populate_mdata_waker: WakeTx<PopulateMetadata>,
 }
 
-pub async fn fetch_users_music_db(
+impl std::fmt::Debug for ReamioApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReamioApp")
+            .field("user_db", &self.user_db)
+            .field("music_dbs", &self.music_dbs)
+            .finish_non_exhaustive()
+    }
+}
+
+#[tracing::instrument]
+pub async fn fetch_users_music_db<U>(
     music_dbs: MusicDbMapRef,
-    user: impl AsRef<str>,
-) -> PoolConnection<sqlx::Sqlite> {
+    user: U,
+) -> PoolConnection<sqlx::Sqlite>
+where
+    U: AsRef<str> + std::fmt::Debug,
+{
     // TODO: create pools on demand, user management
     let music_db_hold = music_dbs.upgrade().unwrap();
     let music_db = music_db_hold.read().await;
@@ -77,6 +92,7 @@ struct UploadReturn {
 ///     Query args. See [[UploadArgs]] for a description of the query parameters for this function.
 /// - body: Body,
 ///     Body of HTTP request. This is the item to be uploaded in it's entirety.
+#[tracing::instrument]
 async fn upload_track(
     State(state): State<ReamioApp>,
     Query(UploadArgs { path }): Query<UploadArgs>,
@@ -130,6 +146,7 @@ async fn upload_track(
 }
 
 /// Dump table for display.
+#[tracing::instrument]
 async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResponse {
     #[derive(Serialize, sqlx::FromRow, Debug)]
     struct RetRow {
@@ -165,8 +182,11 @@ async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResp
     ))
 }
 
+#[tracing::instrument]
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt().init();
+
     let user_db = SqlitePoolOptions::new()
         .connect_with(
             SqliteConnectOptions::new()
