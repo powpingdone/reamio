@@ -2,6 +2,10 @@ use std::{collections::HashMap, sync::Weak};
 
 use tokio::sync::{watch, RwLock};
 
+#[allow(unused)]
+pub use tracing::{debug, error, info, trace, warn, event, Level};
+
+pub use tracing_subscriber::prelude::*;
 pub use sqlx::prelude::*;
 pub use sqlx::SqlitePool;
 

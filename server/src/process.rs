@@ -39,17 +39,17 @@ pub async fn task_populate_mdata(
             //
             // TODO: make this spawn as an async task
             let mut music_db = fetch_users_music_db(music_dbs.clone(), &user).await;
-            let poss_txn = music_db.begin_with("IMMEDIATE").await;
+            let poss_txn = music_db.begin_with("BEGIN IMMEDIATE").await;
             match poss_txn {
                 Err(err) => {
-                    println!("while getting db transaction connection: {err:?}");
+                    error!("while getting db transaction connection: {}", err);
                     return;
                 }
                 Ok(txn) => {
                     let ret = task_populate_mdata_userdb_proccessing(txn, path, user, fid).await;
                     if let Err(err) = ret {
                         // TODO: report upload errors to the user
-                        println!("while doing upload processing: {err:?}");
+                        error!("while doing upload processing: {:?}", err);
                     }
                 }
             }

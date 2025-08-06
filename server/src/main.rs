@@ -10,13 +10,11 @@ use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use tracing::{event, Level};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, watch},
 };
-use tracing_subscriber::prelude::*;
 
 mod error;
 mod prelude;
@@ -72,7 +70,7 @@ where
 #[derive(Deserialize)]
 struct UploadArgs {
     // TODO: Newtype this into something like "ReamioPath" with checks
-    pub path: String,
+    pub path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -98,8 +96,15 @@ async fn upload_track(
     Query(UploadArgs { path }): Query<UploadArgs>,
     body: Body,
 ) -> Result<Json<UploadReturn>, ReamioWebError> {
+    let Some(path) = path else {
+        trace!("no path was attached to the query");
+        return Ok(Json(UploadReturn {written: 0}));
+    };
+    debug!("Uploading path {}", path);
+
     // begin transaction
-    let mut txn = state.user_db.begin_with("IMMEDIATE").await?;
+    let mut txn = state.user_db.begin_with("BEGIN IMMEDIATE").await?;
+    trace!(transaction = ?txn);
 
     // CHANGING THE RETURN TYPE HAS SECURITY IMPLICATIONS
     //
@@ -115,6 +120,7 @@ async fn upload_track(
     .fetch_one(&mut *txn)
     .await?
     .get("fid");
+    trace!(fid);
 
     // write out file
     let mut file = tokio::fs::OpenOptions::new()
@@ -124,6 +130,8 @@ async fn upload_track(
         .open(format!("./devdir/temp/{fid}"))
         .await
         .unwrap();
+    trace!("file opened");
+
     let mut body = body.into_data_stream();
     let mut size_acc = 0;
     while let Some(mut chunk) = body.try_next().await? {
@@ -133,15 +141,18 @@ async fn upload_track(
     }
     file.sync_data().await.unwrap();
     drop(file);
+    debug!(size_acc, fid, "file written");
 
     // operation is good
     txn.commit().await?;
+    trace!(fid, "transaction finished");
 
     // wake the mdata
     //
     // TODO maintenace task: on transaction error, the files are left behind. clean
     // them up.
     state.populate_mdata_waker.send(PopulateMetadata).unwrap();
+    trace!("sent waker for task");
     Ok(Json(UploadReturn { written: size_acc }))
 }
 
@@ -185,7 +196,11 @@ async fn get_artist_album_track(State(state): State<ReamioApp>) -> impl IntoResp
 #[tracing::instrument]
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::TRACE)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .pretty()
+        .init();
 
     let user_db = SqlitePoolOptions::new()
         .connect_with(
@@ -255,6 +270,7 @@ async fn main() {
                         .layer(DefaultBodyLimit::disable()),
                 ),
         )
+        .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
     axum::serve(
         tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap(),

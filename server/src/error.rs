@@ -3,6 +3,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use crate::prelude::*;
+
 /// Catch-all type for internal web errors on the webserver, which is returned
 #[derive(Debug)]
 pub enum ReamioWebError {
@@ -12,24 +14,28 @@ pub enum ReamioWebError {
 
 impl From<sqlx::Error> for ReamioWebError {
     fn from(value: sqlx::Error) -> Self {
-        Self::SQLError(value, StatusCode::INTERNAL_SERVER_ERROR)
+        ReamioWebError::from((StatusCode::INTERNAL_SERVER_ERROR, value))
     }
 }
 
 impl From<(StatusCode, sqlx::Error)> for ReamioWebError {
+    #[tracing::instrument]
     fn from((sc, err): (StatusCode, sqlx::Error)) -> Self {
+        error!(?sc, ?err, "reamioweberror generated");
         Self::SQLError(err, sc)
     }
 }
 
 impl From<axum::Error> for ReamioWebError {
     fn from(value: axum::Error) -> Self {
-        Self::AxumError(value, StatusCode::INTERNAL_SERVER_ERROR)
+        ReamioWebError::from((StatusCode::INTERNAL_SERVER_ERROR, value))
     }
 }
 
 impl From<(StatusCode, axum::Error)> for ReamioWebError {
+    #[tracing::instrument]
     fn from((sc, err): (StatusCode, axum::Error)) -> Self {
+        error!(?sc, ?err, "reamioweberror generated");
         Self::AxumError(err, sc)
     }
 }
@@ -64,30 +70,35 @@ pub enum ReamioProcessingErrorInternal {
 }
 
 impl From<sqlx::Error> for ReamioProcessingErrorInternal {
+    #[tracing::instrument]
     fn from(value: sqlx::Error) -> Self {
         Self::SQL(value)
     }
 }
 
 impl From<std::io::Error> for ReamioProcessingErrorInternal {
+    #[tracing::instrument]
     fn from(value: std::io::Error) -> Self {
         Self::IO(value)
     }
 }
 
 impl From<ReamioPathError> for ReamioProcessingErrorInternal {
+    #[tracing::instrument]
     fn from(value: ReamioPathError) -> Self {
         Self::PathError(value)
     }
 }
 
 impl From<id3::Error> for ReamioProcessingErrorInternal {
+    #[tracing::instrument]
     fn from(value: id3::Error) -> Self {
         Self::ID3(value)
     }
 }
 
 impl From<metaflac::Error> for ReamioProcessingErrorInternal {
+    #[tracing::instrument]
     fn from(value: metaflac::Error) -> Self {
         Self::MetaFlac(value)
     }
