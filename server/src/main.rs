@@ -2,6 +2,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Query, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -12,7 +13,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{RwLock, watch},
 };
 
@@ -51,6 +52,70 @@ where
     let music_db = music_db_hold.read().await;
     let db_pool = music_db.get(user.as_ref()).unwrap();
     db_pool.acquire().await.unwrap()
+}
+
+#[derive(Deserialize)]
+struct DownloadArgs {
+    id: i64,
+    offset_begin: u64,
+    offset_end: u64,
+}
+
+#[derive(Serialize)]
+struct DownloadReturn {
+    chunk: bytes::Bytes,
+}
+
+#[tracing::instrument]
+async fn download_track(
+    State(state): State<ReamioApp>,
+    Query(DownloadArgs {
+        id,
+        offset_begin,
+        offset_end,
+    }): Query<DownloadArgs>,
+) -> Result<Json<DownloadReturn>, ReamioWebError> {
+    // A limit: offset must represent a valid range
+    if offset_begin > offset_end {
+        return Err(ReamioWebError::IncorrectArgs(
+            "offset_begin is bigger than offset_end".to_owned(),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    // A limit: no more than 1mb of reading.
+    if (offset_end - offset_begin) > 2u64.saturating_pow(20) {
+        return Err(ReamioWebError::IncorrectArgs(
+            "offset buffer size exceded".to_owned(),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    // Open and setup file
+    let mut open = tokio::fs::OpenOptions::new();
+    open.read(true);
+    let mut file = open
+        .open(format!("./devdir/u/{}/{id}", "powpingdone"))
+        .await
+        .map_err(|_| {
+            ReamioWebError::IncorrectArgs("no such track exists".to_owned(), StatusCode::NOT_FOUND)
+        })?;
+    debug!(?file, "file opened");
+    let seek = file.seek(std::io::SeekFrom::Start(offset_begin)).await?;
+    trace!(seek, "file seeked");
+
+    // read it, and clamp down the bufsize
+    let mut buf = bytes::BytesMut::zeroed((offset_end - offset_begin).try_into()?);
+    let read_amt = file.read_buf(&mut buf).await?;
+    debug!(read_amt, "read bytes from file");
+    if read_amt < (offset_end - offset_begin).try_into()? {
+        trace!("clamping buffer");
+        buf.resize(read_amt, 0);
+    }
+
+    Ok(Json(DownloadReturn {
+        chunk: buf.freeze(),
+    }))
 }
 
 /// [[UploadArgs]]
@@ -98,7 +163,7 @@ async fn upload_track(
 ) -> Result<Json<UploadReturn>, ReamioWebError> {
     let Some(path) = path else {
         trace!("no path was attached to the query");
-        return Ok(Json(UploadReturn {written: 0}));
+        return Ok(Json(UploadReturn { written: 0 }));
     };
     debug!("Uploading path {}", path);
 

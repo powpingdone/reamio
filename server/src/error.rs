@@ -10,6 +10,9 @@ use crate::prelude::*;
 pub enum ReamioWebError {
     SQLError(sqlx::Error, StatusCode),
     AxumError(axum::Error, StatusCode),
+    IOError(std::io::Error, StatusCode),
+    TryFromIntError(std::num::TryFromIntError, StatusCode),
+    IncorrectArgs(String, StatusCode),
 }
 
 impl From<sqlx::Error> for ReamioWebError {
@@ -40,18 +43,52 @@ impl From<(StatusCode, axum::Error)> for ReamioWebError {
     }
 }
 
+impl From<std::io::Error> for ReamioWebError {
+    fn from(value: std::io::Error) -> Self {
+        ReamioWebError::from((StatusCode::INTERNAL_SERVER_ERROR, value))
+    }
+}
+
+impl From<(StatusCode, std::io::Error)> for ReamioWebError {
+    #[tracing::instrument]
+    fn from((sc, err): (StatusCode, std::io::Error)) -> Self {
+        error!(?sc, ?err, "reamioweberror generated");
+        Self::IOError(err, sc)
+    }
+}
+
+impl From<std::num::TryFromIntError> for ReamioWebError {
+    fn from(value: std::num::TryFromIntError) -> Self {
+        ReamioWebError::from((StatusCode::INTERNAL_SERVER_ERROR, value))
+    }
+}
+
+impl From<(StatusCode, std::num::TryFromIntError)> for ReamioWebError {
+    #[tracing::instrument]
+    fn from((sc, err): (StatusCode, std::num::TryFromIntError)) -> Self {
+        error!(?sc, ?err, "reamioweberror generated");
+        Self::TryFromIntError(err, sc)
+    }
+}
+
 impl IntoResponse for ReamioWebError {
     fn into_response(self) -> Response {
         let code = match &self {
             ReamioWebError::SQLError(_, status_code)
-            | ReamioWebError::AxumError(_, status_code) => status_code,
+            | ReamioWebError::AxumError(_, status_code)
+            | ReamioWebError::IOError(_, status_code)
+            | ReamioWebError::TryFromIntError(_, status_code)
+            | ReamioWebError::IncorrectArgs(_, status_code) => status_code,
         };
-        let msg = match &self {
-            ReamioWebError::SQLError(error, _) => error.to_string(),
-            ReamioWebError::AxumError(error, _) => error.to_string(),
+        let msg: &dyn ToString = match &self {
+            ReamioWebError::SQLError(error, _) => error,
+            ReamioWebError::AxumError(error, _) => error,
+            ReamioWebError::IOError(error, _) => error,
+            ReamioWebError::TryFromIntError(error, _) => error,
+            ReamioWebError::IncorrectArgs(error, _) => error,
         };
 
-        (*code, msg).into_response()
+        (*code, msg.to_string()).into_response()
     }
 }
 

@@ -7,7 +7,7 @@ pub use tracing::{Instrument, Level};
 #[allow(unused)]
 pub use tracing::{debug, error, event, info, trace, warn};
 #[allow(unused)]
-pub use tracing::{debug_span, error_span, span, info_span, trace_span, warn_span};
+pub use tracing::{debug_span, error_span, info_span, span, trace_span, warn_span};
 
 pub use sqlx::SqlitePool;
 pub use sqlx::prelude::*;
