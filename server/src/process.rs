@@ -23,44 +23,65 @@ pub async fn task_populate_mdata(
         for row in uploaded_items.into_iter() {
             // serialize
             let user: String = row.get("user");
-            let path = row.get::<String, _>("orig_path");
+            let path: String = row.get("orig_path");
             let fid: i64 = row.get("fid");
 
-            // check for file existence, which is Result::Ok and boolean true
+            // The following span weirdness is due to async fun stuff. Long story short,
+            // because of Poll::Pending spans will be created incorrectly per async futures
+            // pinning the span, causing it to not drop normally. Instead, instrument the future
+            // that comes from each function. The problem is the `continue` following this
+            // statement at [[exchk]]. Because we cannot `continue` from inside an async
+            // future, manually span the following statements.
+            let rowp_span = error_span!("row processing", user, path, fid);
+            let _rowp_enter = rowp_span.enter();
+            trace!("serialized row");
+
+            // [[exchk]] check for file nonexistence, which is Err or Ok and false
             if !tokio::fs::try_exists(format!("./devdir/temp/{fid}"))
+                .in_current_span()
                 .await
                 .is_ok_and(|x| x)
             {
                 // TODO: maint: clean up uploaded_files that have mismatched files
+                warn!(fid, "fid does not exist in temp dir");
                 continue;
             };
 
-            // spawn a task to add the track
+            // add the track, scoped properly
             //
             // TODO: make this spawn as an async task
-            let mut music_db = fetch_users_music_db(music_dbs.clone(), &user).await;
-            let poss_txn = music_db.begin_with("BEGIN IMMEDIATE").await;
-            match poss_txn {
-                Err(err) => {
-                    error!("while getting db transaction connection: {}", err);
-                    return;
-                }
-                Ok(txn) => {
-                    let ret = task_populate_mdata_userdb_proccessing(txn, path, user, fid).await;
+            {
+                let mut music_db = fetch_users_music_db(music_dbs.clone(), &user).await;
+                let user_db = &user_db;
+
+                async move {
+                    let poss_txn = music_db.begin_with("BEGIN IMMEDIATE").await;
+                    match poss_txn {
+                        Err(err) => {
+                            error!("while getting db transaction connection: {}", err);
+                            return;
+                        }
+                        Ok(txn) => {
+                            let ret =
+                                task_populate_mdata_userdb_proccessing(txn, path, user, fid).await;
+                            if let Err(err) = ret {
+                                // TODO: report upload errors to the user
+                                error!("while doing upload processing: {:?}", err);
+                            }
+                        }
+                    }
+
+                    // delete upload task after previous txn
+                    let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
+                        .bind(fid)
+                        .execute(user_db)
+                        .await;
                     if let Err(err) = ret {
-                        // TODO: report upload errors to the user
-                        error!("while doing upload processing: {:?}", err);
+                        error!("when deleting from uploaded_files: {err:?}");
                     }
                 }
-            }
-
-            // delete upload task after previous txn
-            let ret = sqlx::query("DELETE FROM uploaded_files WHERE fid = $1;")
-                .bind(fid)
-                .execute(&user_db)
-                .await;
-            if let Err(err) = ret {
-                println!("when deleting from uploaded_files: {err:?}");
+                .in_current_span()
+                .await
             }
         }
     }
@@ -77,10 +98,13 @@ async fn task_populate_mdata_userdb_proccessing(
 ) -> Result<(), ReamioProcessingErrorInternal> {
     // step 1: get tags
     let mut tags = extract_tags(fid)?;
+    debug!(?tags, "tags fetched");
 
     // step 2: insert track mdata
     //
     // TODO: support multiple Album/Artist bindings
+    //
+    // TODO: actually support inserting into the same Album/Artist
     let album_id = match tags.remove("album") {
         Some(album) => Some(
             sqlx::query("INSERT INTO album (name) VALUES ($1) RETURNING id;")
@@ -91,6 +115,7 @@ async fn task_populate_mdata_userdb_proccessing(
         ),
         None => None,
     };
+    debug!(album_id, "album processed");
     let artist_id = match tags.remove("artist") {
         Some(artist) => Some(
             sqlx::query("INSERT INTO artist (name) VALUES ($1) RETURNING id;")
@@ -101,6 +126,7 @@ async fn task_populate_mdata_userdb_proccessing(
         ),
         None => None,
     };
+    debug!(artist_id, "artist processed");
 
     // step 3: process requested path
     if !path.chars().next().is_some_and(|x| x == '/') {
@@ -116,7 +142,8 @@ async fn task_populate_mdata_userdb_proccessing(
         }
         .into());
     }
-    let mut path_split = path.split('/').collect::<Vec<_>>();
+    let mut path_split = path.split('/').skip(1).collect::<Vec<_>>();
+    trace!(?path_split, "path split up");
     // this unwrap is fine because of [[ptie]]
     let filename = path_split.pop().unwrap();
     if filename.trim().is_empty() {
@@ -126,11 +153,13 @@ async fn task_populate_mdata_userdb_proccessing(
         .into());
     }
     let filename = filename.trim();
+    debug!(?path_split, "final filename generated");
 
     // step 4: navigate to dir in database
     let parent_dir = {
         let mut dir = None::<i64>;
         for frag in path_split {
+            trace!(dir, "cd to {} dir at", frag);
             if frag.trim().is_empty() {
                 return Err(ReamioPathError {
                     msg: format!("folder \"{frag}\" was trimmed into emptyness"),
@@ -155,9 +184,11 @@ async fn task_populate_mdata_userdb_proccessing(
             // mkdir or cd to that dir
             if let Some(pt) = ls {
                 // cd
+                trace!("cd'ing to {pt}");
                 dir = Some(pt);
             } else {
                 // mkdir
+                trace!("dir {frag} does not exist, generating");
                 let pt = sqlx::query("INSERT INTO dir (name) VALUES ($1) RETURNING node;")
                     .bind(frag)
                     .fetch_one(&mut *txn)
@@ -168,6 +199,7 @@ async fn task_populate_mdata_userdb_proccessing(
                     .bind(dir)
                     .execute(&mut *txn)
                     .await?;
+                debug!("dir {frag} did not exist under {dir:?}, now exists at {pt}");
 
                 // cd
                 dir = Some(pt);
@@ -192,9 +224,11 @@ async fn task_populate_mdata_userdb_proccessing(
             .fetch_one(&mut *txn)
             .await?
             .get::<i64, _>("id");
+    debug!("track id {track_id} created");
 
     // step 6: join track with album and artist
     if artist_id.is_some() {
+        debug!("binding {track_id} to {artist_id:?}");
         sqlx::query("INSERT INTO artist_tracks (track, artist) VALUES ($1, $2);")
             .bind(track_id)
             .bind(artist_id)
@@ -202,6 +236,7 @@ async fn task_populate_mdata_userdb_proccessing(
             .await?;
     }
     if album_id.is_some() {
+        debug!("binding {track_id} to {album_id:?}");
         sqlx::query("INSERT INTO album_tracks (track, album) VALUES ($1, $2);")
             .bind(track_id)
             .bind(album_id)
@@ -212,11 +247,10 @@ async fn task_populate_mdata_userdb_proccessing(
     // step 7: finally, move file
     //
     // note that track_id and fid is secure because it's just a number
-    tokio::fs::rename(
-        format!("./devdir/temp/{fid}"),
-        format!("./devdir/u/{user}/{track_id}"),
-    )
-    .await?;
+    let from = format!("./devdir/temp/{fid}");
+    let to = format!("./devdir/u/{user}/{track_id}");
+    trace!("doing user movement {from} -> {to}");
+    tokio::fs::rename(from, to).await?;
 
     txn.commit().await?;
     Ok(())

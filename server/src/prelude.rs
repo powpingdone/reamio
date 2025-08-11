@@ -1,13 +1,17 @@
 use std::{collections::HashMap, sync::Weak};
 
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, watch};
 
 #[allow(unused)]
-pub use tracing::{debug, error, info, trace, warn, event, Level};
+pub use tracing::{Instrument, Level};
+#[allow(unused)]
+pub use tracing::{debug, error, event, info, trace, warn};
+#[allow(unused)]
+pub use tracing::{debug_span, error_span, span, info_span, trace_span, warn_span};
 
-pub use tracing_subscriber::prelude::*;
-pub use sqlx::prelude::*;
 pub use sqlx::SqlitePool;
+pub use sqlx::prelude::*;
+pub use tracing_subscriber::prelude::*;
 
 pub use crate::error::*;
 pub use crate::fetch_users_music_db;

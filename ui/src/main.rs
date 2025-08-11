@@ -220,22 +220,26 @@ fn file_upload() {
         //
         // This means that the paths from `files` (or `base_paths` in this case) are the head
         // of the dirs and must be stripped so that it can be inserted into the server without
-        // friction:
+        // creating the head dir (listed here as "a").
         //
-        //     [ "a/b/d", "a/c" ] -> [ "/b/d" "/c" ]
+        //     [ "a/b/d", "a/c" ] -> [ "b/d" "c" ]
         //
         // That's what the following code "should" do.
         let stripped_paths = paths
             .into_iter()
-            .map(|x| {
-                for i in &base_paths {
-                    if let Ok(stripped) = x.strip_prefix(i) {
-                        return Ok((x.clone(), stripped.to_owned()));
+            .map(|file| {
+                // for each selected folder path
+                for folder_path in &base_paths {
+                    // if the prefix matches the path in the file selected
+                    if let Ok(stripped) = file.strip_prefix(folder_path) {
+                        // return that display path
+                        return Ok((file.clone(), stripped.to_owned()));
                     }
                 }
+                // otherwise, something as gone seriously wrong
                 Err(format!(
                     "{} does not have a prefix in {:?}",
-                    x.display(),
+                    file.display(),
                     base_paths.iter().map(|x| x.display()).collect::<Vec<_>>()
                 ))
             })
@@ -243,7 +247,8 @@ fn file_upload() {
             .unwrap();
 
         for (realpath, disp) in stripped_paths.into_iter() {
-            let disp = disp.to_str().map(str::to_owned).unwrap();
+            // prefix the disp with an absolute path
+            let disp = format!("/{}", disp.to_str().map(str::to_owned).unwrap());
             ureq::post("http://localhost:8080/api/upload")
                 .query("path", disp)
                 .send(std::fs::read(realpath).unwrap())
