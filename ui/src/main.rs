@@ -8,9 +8,11 @@ use std::{
 use serde::Deserialize;
 use slint::{ModelRc, VecModel};
 
+mod sound;
+
 slint::include_modules!();
 
-static WEAK_MAINWINDOW: OnceLock<slint::Weak<MainWindow>> = OnceLock::new();
+pub static WEAK_MAINWINDOW: OnceLock<slint::Weak<MainWindow>> = OnceLock::new();
 
 fn tabledump() {
     #[derive(Deserialize)]
