@@ -10,6 +10,7 @@ pulseaudio = "0.3.0"
 rfd = "0.15" 
 serde = { version = "1.0", features = ["derive"] }
 slint = "1.11"
+smol = "2.0.2"
 ureq = { version = "3.0", features = ["brotli", "json"] }
 
 [build-dependencies]
