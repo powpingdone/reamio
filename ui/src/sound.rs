@@ -11,7 +11,7 @@ use pulseaudio as pa;
 use pulseaudio::protocol as paproto;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-// Macro for doing conversions from a number format to f32 for range 
+// Macro for doing conversions from a number format to f32 for range
 // mapping, before going back to Self::ExpectedFormat
 macro_rules! match_conv {
     ($buf:expr => $($ty:ty),+) => {
@@ -69,9 +69,9 @@ fn pa_pull_recv(buf: &mut [u8], recv: &mut Receiver<f32>) -> usize {
     let len = buf.len() as u64;
     let mut cursor = std::io::Cursor::new(buf);
     while cursor.position() < len
-        && let Ok(buf) = recv.try_recv()
+        && let Ok(recv_float) = recv.try_recv()
     {
-        let Ok(_) = cursor.write(&buf.to_le_bytes()) else {
+        let Ok(_) = cursor.write(&recv_float.to_le_bytes()) else {
             break;
         };
     }
@@ -108,7 +108,69 @@ impl SoundOut for PulseAudioSoundOut {
     where
         Buffer: AsRef<[Self::ExpectedFormat]>,
     {
-        todo!()
+        let buf = buf.as_ref();
+        if buf.len() % channels as usize != 0 {
+            // TODO: misaligned/missing chanels
+            return Err(());
+        }
+        let mut acc = 0;
+        match channels {
+            // zero channel song? that shouldn't be possible
+            0 => return Err(()),
+            // mono opt
+            1 => {
+                for inp in buf {
+                    let ret = self.channel.try_send(*inp);
+                    if let Err(err) = ret {
+                        match err {
+                            std::sync::mpsc::TrySendError::Full(_) => break,
+                            std::sync::mpsc::TrySendError::Disconnected(_) => return Err(()),
+                        }
+                    }
+                    let ret = self.channel.try_send(*inp);
+                    if let Err(err) = ret {
+                        match err {
+                            std::sync::mpsc::TrySendError::Full(_) => {
+                                self.channel.send(*inp).unwrap();
+                                acc += 1;
+                                break;
+                            }
+                            std::sync::mpsc::TrySendError::Disconnected(_) => return Err(()),
+                        }
+                    }
+
+                    acc += 1;
+                }
+            }
+            // everything else gets chunked
+            _ => {
+                for chunk in buf.chunks_exact(channels as usize) {
+                    // ignore rest of chunk
+                    let (first, sec) = (chunk[0], chunk[1]);
+                    let ret = self.channel.try_send(first);
+                    if let Err(err) = ret {
+                        match err {
+                            std::sync::mpsc::TrySendError::Full(_) => break,
+                            std::sync::mpsc::TrySendError::Disconnected(_) => return Err(()),
+                        }
+                    }
+                    let ret = self.channel.try_send(sec);
+                    if let Err(err) = ret {
+                        match err {
+                            std::sync::mpsc::TrySendError::Full(_) => {
+                                self.channel.send(sec).unwrap();
+                                acc += channels as usize;
+                                break;
+                            }
+                            std::sync::mpsc::TrySendError::Disconnected(_) => return Err(()),
+                        }
+                    }
+
+                    acc += channels as usize;
+                }
+            }
+        }
+        return Ok(acc);
     }
 }
 
